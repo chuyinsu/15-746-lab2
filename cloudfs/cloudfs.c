@@ -163,6 +163,33 @@ int cloudfs_getattr(const char *path, struct stat *sb)
   return retval;
 }
 
+/**
+ * @brief Get extended attributes.
+ * @param path Pathname of the file.
+ * @param name Name of the extended attribute.
+ * @param value The returned information is placed here.
+ * @param size Size of the "value" buffer.
+ * @return Size of the extended attribute value, -1 on failure.
+ */
+int cloudfs_getxattr(const char *path, const char *name, char *value,
+    size_t size)
+{
+  int retval = 0;
+  char fpath[MAX_PATH_LEN] = "";
+
+  cloudfs_get_fullpath(path, fpath);
+
+  retval = lgetxattr(path, name, value, size);
+  if (retval < 0) {
+    retval = cloudfs_error("cloudfs_getxattr");
+  }
+
+  dbg_print("[DBG] cloudfs_getxattr(path=\"%s\", name=\"%s\", value=\"%s\","
+      "size=\"%d\")", path, name, value, size);
+
+  return retval;
+}
+
 /*
  * Functions supported by cloudfs 
  */
@@ -182,6 +209,7 @@ struct fuse_operations cloudfs_operations = {
   //
   //
   .getattr        = cloudfs_getattr,
+  .getxattr       = cloudfs_getxattr,
   .mkdir          = NULL,
   .readdir        = NULL,
   .destroy        = cloudfs_destroy
