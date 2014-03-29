@@ -85,7 +85,6 @@ static int cloudfs_is_in_cloud(char *fpath)
  */
 void cloudfs_get_fullpath(const char *path, char *fullpath)
 {
-  memset(fullpath, '\0', MAX_PATH_LEN);
   snprintf(fullpath, MAX_PATH_LEN, "%s%s", state_.ssd_path, path);
   dbg_print("[DBG] cloudfs_get_fullpath(path=\"%s\", fullpath=\"%s\")",
       path, fullpath);
@@ -125,7 +124,7 @@ void cloudfs_destroy(void *data UNUSED) {
  *        of the proxy file.
  * @param path Pathname of the file.
  * @param sb Buffer for struct stat. The returned information is placed here.
- * @return 0 on success, -1 otherwise.
+ * @return 0 on success, -errno otherwise.
  */
 int cloudfs_getattr(const char *path, struct stat *sb)
 {
@@ -133,12 +132,8 @@ int cloudfs_getattr(const char *path, struct stat *sb)
   char fpath[MAX_PATH_LEN] = "";
   char *fn = "cloudfs_getattr";
 
-  dbg_print("[DBG] cloudfs_getattr(path=\"%s\", sb=0x%08x)\n",
-      path, (unsigned int)sb);
-
   cloudfs_get_fullpath(path, fpath);
 
-  memset(sb, '\0', sizeof(struct stat));
   if (cloudfs_is_in_cloud(fpath)) {
     CK_ERR(lstat(fpath, sb), fn);
     CK_ERR(lgetxattr(fpath, U_DEV, &sb->st_dev, sizeof(dev_t)), fn);
@@ -160,6 +155,10 @@ int cloudfs_getattr(const char *path, struct stat *sb)
     }
   }
 
+  dbg_print("[DBG] cloudfs_getattr(path=\"%s\", sb=0x%08x)=%d\n",
+      path, (unsigned int)sb, retval);
+
+
   return retval;
 }
 
@@ -169,7 +168,7 @@ int cloudfs_getattr(const char *path, struct stat *sb)
  * @param name Name of the extended attribute.
  * @param value The returned information is placed here.
  * @param size Size of the "value" buffer.
- * @return Size of the extended attribute value, -1 on failure.
+ * @return Size of the extended attribute value, -errno on failure.
  */
 int cloudfs_getxattr(const char *path, const char *name, char *value,
     size_t size)
@@ -185,7 +184,35 @@ int cloudfs_getxattr(const char *path, const char *name, char *value,
   }
 
   dbg_print("[DBG] cloudfs_getxattr(path=\"%s\", name=\"%s\", value=\"%s\","
-      "size=\"%d\")", path, name, value, size);
+      "size=%d)=%d", path, name, value, size, retval);
+
+  return retval;
+}
+
+/**
+ * @brief Set extended attributes.
+ * @param path Pathname of the file.
+ * @param name Name of the extended attribute.
+ * @param value Value of the extended attribute.
+ * @param size Size of the "value" buffer.
+ * @param flags "Create" or "Replace" semantics.
+ * @return 0 on success, -errno otherwise.
+ */
+int cloudfs_setxattr(const char *path, const char *name, const char *value,
+    size_t size, int flags)
+{
+  int retval = 0;
+  char fpath[MAX_PATH_LEN] = "";
+
+  cloudfs_get_fullpath(path, fpath);
+
+  retval = lsetxattr(path, name, value, size, flags);
+  if (retval < 0) {
+    retval = cloudfs_error("cloudfs_setxattr");
+  }
+
+  dbg_print("[DBG] cloudfs_setxattr(path=\"%s\", name=\"%s\", value=\"%s\","
+      "size=%d, flags=%d)=%d", path, name, value, size, flags, retval);
 
   return retval;
 }
@@ -210,6 +237,7 @@ struct fuse_operations cloudfs_operations = {
   //
   .getattr        = cloudfs_getattr,
   .getxattr       = cloudfs_getxattr,
+  .setxattr       = cloudfs_setxattr,
   .mkdir          = NULL,
   .readdir        = NULL,
   .destroy        = cloudfs_destroy
