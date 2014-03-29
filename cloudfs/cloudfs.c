@@ -248,6 +248,34 @@ int cloudfs_mkdir(const char *path, mode_t mode)
   return retval;
 }
 
+/**
+ * @brief Create a file node.
+ *        This is used to create a non-directory file. A file is created on
+ *        the local SSD initially; migration to the cloud might happen,
+ *        depending on the size of the file when it is closed.
+ * @param path Pathname of the file to create.
+ * @param mode To set the properties of the file, such as permissions, etc.
+ * @param dev Along with "mode", setting properties of the file.
+ * @return 0 on success, -errno otherwise (and no file shall be created).
+ */
+int mknod(const char *path, mode_t mode, dev_t dev)
+{
+  int retval = 0;
+  char fpath[MAX_PATH_LEN] = "";
+
+  cloudfs_get_fullpath(path, fpath);
+
+  retval = mknod(fpath, mode, dev);
+  if (retval < 0) {
+    retval = cloudfs_error("cloudfs_mknod");
+  }
+
+  dbg_print("[DBG] cloudfs_mknod(path=\"%s\", mode=%d, dev=%d)=%d",
+      path, mode, dev, retval);
+
+  return retval;
+}
+
 /*
  * Functions supported by cloudfs 
  */
@@ -270,6 +298,7 @@ struct fuse_operations cloudfs_operations = {
   .getxattr       = cloudfs_getxattr,
   .setxattr       = cloudfs_setxattr,
   .mkdir          = cloudfs_mkdir,
+  .mknod          = coudfs_mknod,
   .readdir        = NULL,
   .destroy        = cloudfs_destroy
 };
