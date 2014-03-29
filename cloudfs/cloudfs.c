@@ -158,12 +158,14 @@ int cloudfs_getattr(const char *path, struct stat *sb)
   dbg_print("[DBG] cloudfs_getattr(path=\"%s\", sb=0x%08x)=%d\n",
       path, (unsigned int)sb, retval);
 
-
   return retval;
 }
 
 /**
  * @brief Get extended attributes.
+ *        Since all file attributes are stored locally on SSD, for files on SSD
+ *        or in the cloud, we can read the extended attribute directly from
+ *        files or proxy files.
  * @param path Pathname of the file.
  * @param name Name of the extended attribute.
  * @param value The returned information is placed here.
@@ -191,6 +193,9 @@ int cloudfs_getxattr(const char *path, const char *name, char *value,
 
 /**
  * @brief Set extended attributes.
+ *        Since all file attributes are stored locally on SSD, for files on SSD
+ *        or in the cloud, we can write the extended attribute directly to
+ *        files or proxy files.
  * @param path Pathname of the file.
  * @param name Name of the extended attribute.
  * @param value Value of the extended attribute.
@@ -217,6 +222,32 @@ int cloudfs_setxattr(const char *path, const char *name, const char *value,
   return retval;
 }
 
+/**
+ * @brief Create a directory.
+ *        The entire directory tree is maintained locally on SSD,
+ *        so just go ahead and create the directory.
+ * @param path Path of the directory to create.
+ * @param mode Controls the semantics of the function call,
+ *             Such as permissions, etc.
+ * @return 0 on success, -errno otherwise (and no directory shall be created).
+ */
+int cloudfs_mkdir(const char *path, mode_t mode)
+{
+  int retval = 0;
+  char fpath[MAX_PATH_LEN] = "";
+
+  cloudfs_get_fullpath(path, fpath);
+
+  retval = mkdir(fpath, mode);
+  if (retval < 0) {
+    retval = cloudfs_error("cloudfs_mkdir");
+  }
+
+  dbg_print("[DBG] cloudfs_mkdir(path=\"%s\", mode=%d)=%d", path, mode, retval);
+
+  return retval;
+}
+
 /*
  * Functions supported by cloudfs 
  */
@@ -238,7 +269,7 @@ struct fuse_operations cloudfs_operations = {
   .getattr        = cloudfs_getattr,
   .getxattr       = cloudfs_getxattr,
   .setxattr       = cloudfs_setxattr,
-  .mkdir          = NULL,
+  .mkdir          = cloudfs_mkdir,
   .readdir        = NULL,
   .destroy        = cloudfs_destroy
 };
