@@ -58,8 +58,57 @@
 #define U_ATIME ("user.st_atime")
 #define U_MTIME ("user.st_mtime")
 #define U_CTIME ("user.st_ctime")
+#define U_REMOTE ("user.remote")
 
-static struct cloudfs_state state_;
+/* temporary path to store downloaded files from the cloud */
+#define TEMP_PATH ("/.tmp")
+
+/* bucket name in the cloud */
+#define BUCKET ("yinsuc")
+
+static struct cloudfs_state State_;
+
+/**
+ * @brief Get the full path to store temporary file downloaded from the cloud.
+ * @param key The key of the file in the cloud, here it serves as the file name.
+ * @param tpath The generated pathname of the temporary file on SSD.
+ * @return Void.
+ */
+void cloudfs_get_temppath(const char *key, char *tpath)
+{
+  snprintf(tpath, MAX_PATH_LEN, "%s/%s", TEMP_PATH, key);
+}
+
+/**
+ * @brief Convert full path on SSD to key for the cloud storage.
+ *        This key also serves as the temporary file name when the
+ *        file is downloaded from the cloud to SSD.
+ *        Simple strategy: use the full path, replace all illegal characters.
+ * @param fpath Pathname of the file.
+ * @param key The key for the file to store in the cloud. It should have
+ *            at least MAX_PATH_LEN byte space.
+ * @return Void.
+ */
+void cloudfs_get_key(const char *fpath, char *key)
+{
+  /* copy the full path to key */
+  strncpy(key, fpath, MAX_PATH_LEN);
+  key[MAX_PATH_LEN - 1] = '\0';
+
+  /* replace illegal characters in key */
+  size_t i = 0;
+  for (i = 0; i < strlen(key); i++) {
+    if (key[i] == '/') {
+      key[i] = '+';
+    }
+  }
+}
+
+/* callback function for downloading from the cloud */
+static FILE *Tfile;
+int get_buffer(const char *buf, int len) {
+  return fwrite(buf, 1, len, Tfile);
+}
 
 /**
  * @brief Check whether a file is stored in the cloud.
@@ -85,7 +134,7 @@ static int cloudfs_is_in_cloud(char *fpath)
  */
 void cloudfs_get_fullpath(const char *path, char *fullpath)
 {
-  snprintf(fullpath, MAX_PATH_LEN, "%s%s", state_.ssd_path, path);
+  snprintf(fullpath, MAX_PATH_LEN, "%s%s", State_.ssd_path, path);
   dbg_print("[DBG] cloudfs_get_fullpath(path=\"%s\", fullpath=\"%s\")",
       path, fullpath);
 }
@@ -109,7 +158,7 @@ static int cloudfs_error(char *error_str)
  */
 void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
 {
-  cloud_init(state_.hostname);
+  cloud_init(State_.hostname);
   return NULL;
 }
 
@@ -258,7 +307,7 @@ int cloudfs_mkdir(const char *path, mode_t mode)
  * @param dev Along with "mode", setting properties of the file.
  * @return 0 on success, -errno otherwise (and no file shall be created).
  */
-int mknod(const char *path, mode_t mode, dev_t dev)
+int cloudfs_mknod(const char *path, mode_t mode, dev_t dev)
 {
   int retval = 0;
   char fpath[MAX_PATH_LEN] = "";
@@ -270,8 +319,53 @@ int mknod(const char *path, mode_t mode, dev_t dev)
     retval = cloudfs_error("cloudfs_mknod");
   }
 
-  dbg_print("[DBG] cloudfs_mknod(path=\"%s\", mode=%d, dev=%d)=%d",
+  /* every new file is marked as local initially */
+  lsetxattr(fpath, U_REMOTE, 0, sizeof(int), XATTR_REPLACE);
+
+  dbg_print("[DBG] cloudfs_mknod(path=\"%s\", mode=%d, dev=%llu)=%d",
       path, mode, dev, retval);
+
+  return retval;
+}
+
+/**
+ * @brief Open a file.
+ *        If the file is in local SSD, open it directly;
+ *        Otherwise, download the file from the cloud and
+ *        store it locally for access. Any changes will be
+ *        synchronized when the file is closed.
+ * @param path Pathname of the file to open.
+ * @param ffi Information about the opened file is returned here.
+ * @return 0 on success, -errno on failure.
+ */
+int cloudfs_open(const char *path, struct fuse_file_info *ffi)
+{
+  int retval = 0;
+  char fpath[MAX_PATH_LEN] = "";
+  char tpath[MAX_PATH_LEN] = "";
+  char key[MAX_PATH_LEN] = "";
+  int fd = 0;
+
+  cloudfs_get_fullpath(path, fpath);
+
+  if (cloudfs_is_in_cloud(fpath)) {
+    cloudfs_get_key(fpath, key);
+    cloudfs_get_temppath(key, tpath);
+    Tfile = fopen(tpath, "wb");
+    cloud_get_object(BUCKET, key, get_buffer);
+    fclose(Tfile);
+    fd = open(tpath, O_RDWR);
+  } else {
+    fd = open(fpath, O_RDWR);
+  }
+
+  ffi->fh = fd;
+  if (fd < 0) {
+    retval = cloudfs_error("cloudfs_open");
+  }
+
+  dbg_print("[DBG] cloudfs_open(path=\"%s\", ffi=0x%08x)=%d",
+      path, (unsigned int)ffi, retval);
 
   return retval;
 }
@@ -280,7 +374,7 @@ int mknod(const char *path, mode_t mode, dev_t dev)
  * Functions supported by cloudfs 
  */
 static 
-struct fuse_operations cloudfs_operations = {
+struct fuse_operations Cloudfs_operations = {
   .init           = cloudfs_init,
   //
   // TODO
@@ -298,7 +392,8 @@ struct fuse_operations cloudfs_operations = {
   .getxattr       = cloudfs_getxattr,
   .setxattr       = cloudfs_setxattr,
   .mkdir          = cloudfs_mkdir,
-  .mknod          = coudfs_mknod,
+  .mknod          = cloudfs_mknod,
+  .open           = cloudfs_open,
   .readdir        = NULL,
   .destroy        = cloudfs_destroy
 };
@@ -315,9 +410,10 @@ int cloudfs_start(struct cloudfs_state *state,
   argv[argc++] = "-s"; // set the fuse mode to single thread
   //argv[argc++] = "-f"; // run fuse in foreground 
 
-  state_  = *state;
+  State_  = *state;
 
-  int fuse_stat = fuse_main(argc, argv, &cloudfs_operations, NULL);
+  int fuse_stat = fuse_main(argc, argv, &Cloudfs_operations, NULL);
 
   return fuse_stat;
 }
+
