@@ -130,6 +130,8 @@ void cloudfs_get_temppath(const char *fpath, char *tpath)
   char key[MAX_PATH_LEN] = "";
   cloudfs_get_key(fpath, key);
   snprintf(tpath, MAX_PATH_LEN, "%s/%s", TEMP_PATH, key);
+
+  dbg_print("cloudfs_get_temppath(fpath=\"%s\", tpath=\"%s\")", fpath, tpath);
 }
 
 /**
@@ -155,6 +157,8 @@ void cloudfs_get_key(const char *fpath, char *key)
       key[i] = '+';
     }
   }
+
+  dbg_print("cloudfs_get_key(fpath=\"%s\", key=\"%s\")", fpath, key);
 }
 
 /* callback function for downloading from the cloud */
@@ -638,6 +642,36 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
     }
   }
 
+  dbg_print("[DBG] cloudfs_release(path=\"%s\", fi=0x%08x)=%d", path,
+      (unsigned int) fi, retval);
+
+  return retval;
+}
+
+/**
+ * @brief Open a directory.
+ * @param path The path of the directory.
+ * @param fi Information about the opened directory is returned here.
+ * @return 0 on success, -errno otherwise.
+ */
+int cloudfs_opendir(const char *path, struct fuse_file_info *fi)
+{
+  int retval = 0;
+  DIR *dp = NULL;
+  char fpath[MAX_PATH_LEN] = "";
+
+  cloudfs_get_fullpath(path, fpath);
+
+  dp = opendir(fpath);
+  if (dp == NULL) {
+    retval = cloudfs_error("cloudfs_opendir");
+  }
+
+  fi->fh = (intptr_t) dp;
+
+  dbg_print("[DBG] cloudfs_opendir(path=\"%s\", fi=0x%08x)=%d", path,
+      (unsigned int) fi, retval);
+
   return retval;
 }
 
@@ -653,6 +687,7 @@ static struct fuse_operations Cloudfs_operations = {
   .read           = cloudfs_read,
   .write          = cloudfs_write,
   .release        = cloudfs_release,
+  .opendir        = cloudfs_opendir,
   .readdir        = NULL,
   .destroy        = cloudfs_destroy
 };
