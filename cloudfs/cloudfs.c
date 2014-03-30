@@ -199,7 +199,8 @@ int cloudfs_getattr(const char *path, struct stat *sb)
     CK_ERR(lgetxattr(fpath, U_MTIME, &sb->st_mtime, sizeof(time_t)), fn);
     CK_ERR(lgetxattr(fpath, U_CTIME, &sb->st_ctime, sizeof(time_t)), fn);
   } else {
-    if (lstat(fpath, sb) < 0) {
+    retval = lstat(fpath, sb);
+    if (retval < 0) {
       retval = cloudfs_error(fn);
     }
   }
@@ -234,7 +235,7 @@ int cloudfs_getxattr(const char *path, const char *name, char *value,
     retval = cloudfs_error("cloudfs_getxattr");
   }
 
-  dbg_print("[DBG] cloudfs_getxattr(path=\"%s\", name=\"%s\", value=\"%s\","
+  dbg_print("[DBG] cloudfs_getxattr(path=\"%s\", name=\"%s\", value=\"%s\", "
       "size=%d)=%d", path, name, value, size, retval);
 
   return retval;
@@ -320,7 +321,8 @@ int cloudfs_mknod(const char *path, mode_t mode, dev_t dev)
   }
 
   /* every new file is marked as local initially */
-  lsetxattr(fpath, U_REMOTE, 0, sizeof(int), XATTR_REPLACE);
+  int remote = 0;
+  lsetxattr(fpath, U_REMOTE, &remote, sizeof(int), XATTR_REPLACE);
 
   dbg_print("[DBG] cloudfs_mknod(path=\"%s\", mode=%d, dev=%llu)=%d",
       path, mode, dev, retval);
@@ -335,10 +337,10 @@ int cloudfs_mknod(const char *path, mode_t mode, dev_t dev)
  *        store it locally for access. Any changes will be
  *        synchronized when the file is closed.
  * @param path Pathname of the file to open.
- * @param ffi Information about the opened file is returned here.
+ * @param fi Information about the opened file is returned here.
  * @return 0 on success, -errno on failure.
  */
-int cloudfs_open(const char *path, struct fuse_file_info *ffi)
+int cloudfs_open(const char *path, struct fuse_file_info *fi)
 {
   int retval = 0;
   char fpath[MAX_PATH_LEN] = "";
@@ -359,13 +361,40 @@ int cloudfs_open(const char *path, struct fuse_file_info *ffi)
     fd = open(fpath, O_RDWR);
   }
 
-  ffi->fh = fd;
+  fi->fh = fd;
   if (fd < 0) {
     retval = cloudfs_error("cloudfs_open");
   }
 
-  dbg_print("[DBG] cloudfs_open(path=\"%s\", ffi=0x%08x)=%d",
-      path, (unsigned int)ffi, retval);
+  dbg_print("[DBG] cloudfs_open(path=\"%s\", fi=0x%08x)=%d",
+      path, (unsigned int)fi, retval);
+
+  return retval;
+}
+
+/**
+ * @brief Read data from an opened file.
+ *        The underlying file descriptor has already been saved in "fi",
+ *        so here we can directly use it.
+ * @param path Pathname of the file.
+ * @param buf Returned data is placed here.
+ * @param size Size of the buffer.
+ * @param offset The beginning place to start reading.
+ * @param fi The information about the opened file.
+ * @return Number of bytes read on success, -errno otherwise.
+ */
+int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
+    struct fuse_file_info *fi)
+{
+  int retval = 0;
+
+  retval = pread(fi->fh, buf, size, offset);
+  if (retval < 0) {
+    retval = cloudfs_error("cloudfs_read");
+  }
+
+  dbg_print("[DBG] cloudfs_read(path=\"%s\", buf=\"%s\", size=%d, offset=%llu, "
+      "fi=0x%08x)=%d", path, buf, size, offset, (unsigned int)fi, retval);
 
   return retval;
 }
@@ -394,6 +423,7 @@ struct fuse_operations Cloudfs_operations = {
   .mkdir          = cloudfs_mkdir,
   .mknod          = cloudfs_mknod,
   .open           = cloudfs_open,
+  .read           = cloudfs_read,
   .readdir        = NULL,
   .destroy        = cloudfs_destroy
 };
