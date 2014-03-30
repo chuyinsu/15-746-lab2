@@ -67,6 +67,9 @@
 /* bucket name in the cloud */
 #define BUCKET ("yinsuc")
 
+/* convert from directory type to stat mode */
+#define DT_TO_MODE(type) ((type) << 12)
+
 /* flags used when updating file attributes */
 typedef enum {
   CREATE,
@@ -675,6 +678,50 @@ int cloudfs_opendir(const char *path, struct fuse_file_info *fi)
   return retval;
 }
 
+/**
+ * @brief Read directory.
+ *        The strategy used here is to ignore the offset passed in,
+ *        each time the whole directory is read into the buffer.
+ * @param path Path of the directory.
+ * @param buf Buffer to store returned information.
+ * @param filler Function to add an entry into the buffer.
+ * @param offset The offset to start reading.
+ * @param fi Information about the opened directory.
+ * @return 0 on success, -errno otherwise.
+ */
+int cloudfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
+    off_t offset, struct fuse_file_info *fi)
+{
+  int retval = 0;
+  DIR *dp = NULL;
+  struct dirent *de = NULL;
+
+  dp = (DIR *) (uintptr_t) fi->fh;
+
+  de = readdir(dp);
+  if (de == NULL) {
+    retval = cloudfs_error("cloudfs_readdir");
+    return retval;
+  }
+
+  struct stat sb;
+  do {
+    memset(&sb, '\0', sizeof(struct stat));
+    sb.st_ino = de->d_ino;
+    sb.st_mode = DT_TO_MODE(de->d_type);
+    if (filler(buf, de->d_name, &sb, 0) != 0) {
+      retval = -ENOMEM;
+      return retval;
+    }
+  } while ((de = readdir(dp)) != NULL);
+
+  dbg_print("[DBG] cloudfs_readdir(path=\"%s\", buf=0x%08x, filler=0x%08x,"
+      " offset=%llu, fi=0x%08x)=%d", path, (unsigned int) buf,
+      (unsigned int) filler, offset, (unsigned int) fi, retval);
+
+  return retval;
+}
+
 /* functions supported by CloudFS */
 static struct fuse_operations Cloudfs_operations = {
   .init           = cloudfs_init,
@@ -688,7 +735,7 @@ static struct fuse_operations Cloudfs_operations = {
   .write          = cloudfs_write,
   .release        = cloudfs_release,
   .opendir        = cloudfs_opendir,
-  .readdir        = NULL,
+  .readdir        = cloudfs_readdir,
   .destroy        = cloudfs_destroy
 };
 
