@@ -218,29 +218,6 @@ static int cloudfs_error(char *error_str)
 }
 
 /**
- * @brief Initializes the FUSE file system.
- *        Currently its job is to create the bucket in the cloud.
- * @param conn Unused parameter.
- * @return NULL.
- */
-void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
-{
-  cloud_init(State_.hostname);
-  cloud_create_bucket(BUCKET);
-  return NULL;
-}
-
-/**
- * @brief Clean up CloudFS.
- *        This is called on CloudFS exit.
- * @param data Unused parameter.
- * @return Void.
- */
-void cloudfs_destroy(void *data UNUSED) {
-  cloud_destroy();
-}
-
-/**
  * @brief Get file attributes.
  *        For files stored on SSD, just retrieve the attributes directly;
  *        for files in the cloud, refer to the extended attributes
@@ -431,8 +408,8 @@ int cloudfs_open(const char *path, struct fuse_file_info *fi)
     cloudfs_get_temppath(fpath, tpath);
     Tfile = fopen(tpath, "wb");
     cloud_get_object(BUCKET, key, get_buffer);
-    fclose(Tfile);
     cloud_print_error();
+    fclose(Tfile);
     fd = open(tpath, O_RDWR);
   } else {
     fd = open(fpath, O_RDWR);
@@ -602,8 +579,8 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
         /* upload the new version */
         Cfile = fopen(tpath, "rb");
         cloud_put_object(BUCKET, key, sb.st_size, put_buffer);
-        fclose(Cfile);
         cloud_print_error();
+        fclose(Cfile);
 
         /* update attributes */
         cloudfs_upgrade_attr(&sb, fpath, UPDATE);
@@ -641,8 +618,8 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
       /* upload */
       Cfile = fopen(fpath, "rb");
       cloud_put_object(BUCKET, key, sb.st_size, put_buffer);
-      fclose(Cfile);
       cloud_print_error();
+      fclose(Cfile);
 
       /* clear the file content */
       FILE *fp = fopen(fpath, "wb");
@@ -730,6 +707,58 @@ int cloudfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
   return retval;
 }
 
+/**
+ * @brief Initializes the FUSE file system.
+ *        Currently its job is to create the bucket in the cloud.
+ * @param conn Unused parameter.
+ * @return NULL.
+ */
+void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
+{
+  cloud_init(State_.hostname);
+  cloud_print_error();
+  cloud_create_bucket(BUCKET);
+  cloud_print_error();
+
+  dbg_print("[DBG] cloudfs_init()");
+
+  return NULL;
+}
+
+/**
+ * @brief Clean up CloudFS.
+ *        This is called on CloudFS exit.
+ * @param data Unused parameter.
+ * @return Void.
+ */
+void cloudfs_destroy(void *data UNUSED) {
+  cloud_destroy();
+  cloud_print_error();
+
+  dbg_print("[DBG] cloudfs_destroy()");
+}
+
+/**
+ * @brief Check file access permissions.
+ * @param path Pathname of the file.
+ * @param mask The permissions to check.
+ * @return 0 on permitted, -errno otherwise.
+ */
+int cloudfs_access(const char *path, int mask)
+{
+  int retval = 0;
+  char fpath[MAX_PATH_LEN] = "";
+
+  cloudfs_get_fullpath(path, fpath);
+
+  retval = access(fpath, mask);
+  if (retval < 0) {
+    retval = cloudfs_error("cloudfs_access");
+  }
+
+  return retval;
+}
+
 /* functions supported by CloudFS */
 static struct fuse_operations Cloudfs_operations = {
   .getattr        = cloudfs_getattr,
@@ -744,7 +773,8 @@ static struct fuse_operations Cloudfs_operations = {
   .opendir        = cloudfs_opendir,
   .readdir        = cloudfs_readdir,
   .init           = cloudfs_init,
-  .destroy        = cloudfs_destroy
+  .destroy        = cloudfs_destroy,
+  .access         = cloudfs_access
 };
 
 int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
