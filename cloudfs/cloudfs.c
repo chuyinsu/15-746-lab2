@@ -71,12 +71,14 @@ static struct cloudfs_state State_;
 
 /**
  * @brief Get the full path to store temporary file downloaded from the cloud.
- * @param key The key of the file in the cloud, here it serves as the file name.
+ * @param fpath The full path of the proxy file.
  * @param tpath The generated pathname of the temporary file on SSD.
  * @return Void.
  */
-void cloudfs_get_temppath(const char *key, char *tpath)
+void cloudfs_get_temppath(const char *fpath, char *tpath)
 {
+  char key[MAX_PATH_LEN] = "";
+  cloudfs_get_key(fpath, key);
   snprintf(tpath, MAX_PATH_LEN, "%s/%s", TEMP_PATH, key);
 }
 
@@ -106,9 +108,15 @@ void cloudfs_get_key(const char *fpath, char *key)
 }
 
 /* callback function for downloading from the cloud */
-static FILE *Tfile;
+static FILE *Tfile; /* temporary file */
 int get_buffer(const char *buf, int len) {
   return fwrite(buf, 1, len, Tfile);
+}
+
+/* callback function for uploading to the cloud */
+static FILE *Cfile; /* cloud file */
+int put_buffer(char *buf, int len) {
+  return fread(buf, 1, len, Cfile);
 }
 
 /**
@@ -120,7 +128,7 @@ int get_buffer(const char *buf, int len) {
 static int cloudfs_is_in_cloud(char *fpath)
 {
   int retval = 0;
-  lgetxattr(fpath, "user.remote", &retval, sizeof(int));
+  lgetxattr(fpath, U_REMOTE, &retval, sizeof(int));
   dbg_print("[DBG] cloudfs_is_in_cloud(fpath=\"%s\")=%d\n", fpath, retval);
   return retval;
 }
@@ -207,7 +215,7 @@ int cloudfs_getattr(const char *path, struct stat *sb)
   }
 
   dbg_print("[DBG] cloudfs_getattr(path=\"%s\", sb=0x%08x)=%d\n",
-      path, (unsigned int)sb, retval);
+      path, (unsigned int) sb, retval);
 
   return retval;
 }
@@ -355,10 +363,11 @@ int cloudfs_open(const char *path, struct fuse_file_info *fi)
 
   if (cloudfs_is_in_cloud(fpath)) {
     cloudfs_get_key(fpath, key);
-    cloudfs_get_temppath(key, tpath);
+    cloudfs_get_temppath(fpath, tpath);
     Tfile = fopen(tpath, "wb");
     cloud_get_object(BUCKET, key, get_buffer);
     fclose(Tfile);
+    cloud_print_error();
     fd = open(tpath, O_RDWR);
   } else {
     fd = open(fpath, O_RDWR);
@@ -370,7 +379,7 @@ int cloudfs_open(const char *path, struct fuse_file_info *fi)
   }
 
   dbg_print("[DBG] cloudfs_open(path=\"%s\", fi=0x%08x)=%d",
-      path, (unsigned int)fi, retval);
+      path, (unsigned int) fi, retval);
 
   return retval;
 }
@@ -397,7 +406,7 @@ int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
   }
 
   dbg_print("[DBG] cloudfs_read(path=\"%s\", buf=\"%s\", size=%d, offset=%llu,"
-      " fi=0x%08x)=%d", path, buf, size, offset, (unsigned int)fi, retval);
+      " fi=0x%08x)=%d", path, buf, size, offset, (unsigned int) fi, retval);
 
   return retval;
 }
@@ -433,7 +442,155 @@ int cloudfs_write(const char *path, const char *buf, size_t size, off_t offset,
   }
 
   dbg_print("[DBG] cloudfs_write(path=\"%s\", buf=\"%s\", size=%d, offset=%llu,"
-      " fi=0x%08x)=%d", path, buf, size, offset, (unsigned int)fi, retval);
+      " fi=0x%08x)=%d", path, buf, size, offset, (unsigned int) fi, retval);
+
+  return retval;
+}
+
+/**
+ * @brief Release an opened file.
+ *        For files stored on SSD:
+ *          - If its size does not exceed the threshold, just close it;
+ *          - If its size has exceeded the threshold, move it to the cloud;
+ *        For files stored in the cloud:
+ *          - If its dirty attribute is not set, just delete the temporary file.
+ *          - If its dirty attribute is set:
+ *            1) If its size shrinks below the threshold, move it back to SSD;
+ *            2) Otherwise, upload the new version to the cloud;
+ * @param path Pathname of the file to release.
+ * @param fi The information about the opened file.
+ * @return 0 on success, -errno otherwise.
+ */
+int cloudfs_release(const char *path, struct fuse_file_info *fi)
+{
+  int retval = 0;
+  char fpath[MAX_PATH_LEN] = "";
+  char tpath[MAX_PATH_LEN] = "";
+  char key[MAX_PATH_LEN] = "";
+  struct stat sb;
+
+  retval = close(fi->fh);
+  if (retval < 0) {
+    retval = cloudfs_error("cloudfs_release");
+    return retval;
+  }
+
+  cloudfs_get_fullpath(path, fpath);
+
+  if (cloudfs_is_in_cloud(fpath)) {
+    /* cloud file */
+
+    cloudfs_get_temppath(fpath, tpath);
+    cloudfs_get_key(fpath, key);
+
+    /* read the latest attributes from the temporary file */
+    retval = stat(fpath, &sb);
+    if (retval < 0) {
+      retval = cloudfs_error("cloudfs_release");
+      return retval;
+    }
+
+    /* read dirty attribute */
+    int dirty = 0;
+    retval = lgetxattr(fpath, U_DIRTY, &dirty, sizeof(int));
+    if (retval < 0) {
+      retval = cloudfs_error("cloudfs_release");
+      return retval;
+    }
+
+    if (dirty) {
+      /* file content changed */
+
+      if (sb.st_size < State_.threshold) {
+        /* move back to SSD */
+
+        /* read the old stat from proxy file */
+        struct stat old_stat;
+        retval = cloudfs_getattr(fpath, &old_stat);
+        if (retval < 0) {
+          return retval;
+        }
+
+        /* delete the proxy file */
+        retval = remove(fpath);
+        if (retval < 0) {
+          retval = cloud_error("cloudfs_release");
+          return retval;
+        }
+
+        /* move the temporary file to the original location on SSD */
+        retval = rename(tpath, fpath);
+        if (retval < 0) {
+          retval = cloud_error("cloudfs_release");
+          return retval;
+        }
+
+        /* update attributes */
+        downgrade_attr(&old_stat, fpath);
+
+        /* delete the file in the cloud */
+        cloud_delete_object(BUCKET, key);
+        cloud_print_error();
+      } else {
+        /* synchronize to the cloud */
+
+        /* delete the file in the cloud */
+        cloud_delete_object(BUCKET, key);
+        cloud_print_error();
+
+        /* upload the new version */
+        Cfile = fopen(tpath, "rb");
+        cloud_put_object(BUCKET, key, sb.st_size, put_buffer);
+        fclose(Cfile);
+        cloud_print_error();
+
+        /* update attributes */
+        upgrade_attr(&stat, fpath);
+
+        /* remove the temporary file on SSD */
+        retval = remove(tpath);
+        if (retval < 0) {
+          retval = cloudfs_error("cloudfs_release");
+          return retval;
+        }
+      }
+    } else {
+      /* file content not changed */
+
+      /* remove the temporary file on SSD */
+      retval = remove(tpath);
+      if (retval < 0) {
+        retval = cloudfs_error("cloudfs_release");
+        return retval;
+      }
+    }
+  } else {
+    /* local file */
+
+    /* read file attributes */
+    retval = stat(fpath, &sb);
+    if (retval < 0) {
+      retval = cloudfs_error("cloudfs_release");
+      return retval;
+    }
+
+    if (sb.st_size > State_.threshold) {
+      /* move to the cloud */
+
+      /* upload */
+      Cfile = fopen(fpath, "rb");
+      cloud_put_object(BUCKET, key, sb.st_size, put_buffer);
+      fclose(Cfile);
+      cloud_print_error();
+
+      /* clear the file content */
+      FILE *fp = fopen(fpath, "wb");
+      fclose(fp);
+
+      /* update attributes */
+      upgrade_attr(&stat, fpath);
+    }
+  }
 
   return retval;
 }
@@ -449,13 +606,14 @@ static struct fuse_operations Cloudfs_operations = {
   .open           = cloudfs_open,
   .read           = cloudfs_read,
   .write          = cloudfs_write,
+  .release        = cloudfs_release,
   .readdir        = NULL,
   .destroy        = cloudfs_destroy
 };
 
 int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
   int argc = 0;
-  char* argv[10];
+  char *argv[10] = "";
 
   argv[argc] = (char *) malloc(128 * sizeof(char));
   strcpy(argv[argc++], fuse_runtime_name);
@@ -468,7 +626,7 @@ int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
   /* run fuse in foreground */
   //argv[argc++] = "-f";
 
-  State_  = *state;
+  State_ = *state;
   int fuse_stat = fuse_main(argc, argv, &Cloudfs_operations, NULL);
 
   return fuse_stat;
