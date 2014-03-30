@@ -67,7 +67,57 @@
 /* bucket name in the cloud */
 #define BUCKET ("yinsuc")
 
+/* flags used when updating file attributes */
+typedef enum {
+  CREATE,
+  UPDATE
+} attr_flag_t;
+
 static struct cloudfs_state State_;
+
+static int cloudfs_error(char *error_str);
+void cloudfs_get_key(const char *fpath, char *key);
+
+/**
+ * @brief Update the attributes of a proxy file.
+ * @param sp Pointer to the real attribute values.
+ * @param fpath Pathname of the proxy file.
+ * @param flag To control which attributes need to be updated.
+ *             Some attributes, such as st_ino, should only be updated
+ *             the first time when the file is migrated to the cloud;
+ *             which others, such as st_size, always need to be updated.
+ * @return 0 on success, -errno otherwise.
+ */
+int cloudfs_upgrade_attr(struct stat *sp, char *fpath, attr_flag_t flag)
+{
+  int retval = 0;
+  char *fn = "cloudfs_upgrade_attr";
+
+  if (flag == CREATE) {
+    CK_ERR(lsetxattr(fpath, U_DEV, &sp->st_dev, sizeof(dev_t), 0), fn);
+    CK_ERR(lsetxattr(fpath, U_INO, &sp->st_ino, sizeof(ino_t), 0), fn);
+    CK_ERR(lsetxattr(fpath, U_MODE, &sp->st_mode, sizeof(mode_t), 0), fn);
+    CK_ERR(lsetxattr(fpath, U_NLINK, &sp->st_nlink, sizeof(nlink_t), 0), fn);
+    CK_ERR(lsetxattr(fpath, U_UID, &sp->st_uid, sizeof(uid_t), 0), fn);
+    CK_ERR(lsetxattr(fpath, U_GID, &sp->st_gid, sizeof(gid_t), 0), fn);
+    CK_ERR(lsetxattr(fpath, U_RDEV, &sp->st_rdev, sizeof(dev_t), 0), fn);
+    CK_ERR(lsetxattr(fpath, U_BLKSIZE, &sp->st_blksize, sizeof(blksize_t), 0),
+        fn);
+    CK_ERR(lsetxattr(fpath, U_ATIME, &sp->st_atime, sizeof(time_t), 0), fn);
+    CK_ERR(lsetxattr(fpath, U_MTIME, &sp->st_mtime, sizeof(time_t), 0), fn);
+    CK_ERR(lsetxattr(fpath, U_CTIME, &sp->st_ctime, sizeof(time_t), 0), fn);
+  }
+
+  CK_ERR(lsetxattr(fpath, U_SIZE, &sp->st_size, sizeof(off_t), 0), fn);
+  CK_ERR(lsetxattr(fpath, U_BLOCKS , &sp->st_blocks, sizeof(blkcnt_t), 0), fn);
+
+  int remote = 1;
+  CK_ERR(lsetxattr(fpath, U_REMOTE, &remote, sizeof(int), 0), fn);
+  int dirty = 0;
+  CK_ERR(lsetxattr(fpath, U_DIRTY, &dirty, sizeof(int), 0), fn);
+
+  return retval;
+}
 
 /**
  * @brief Get the full path to store temporary file downloaded from the cloud.
@@ -332,8 +382,8 @@ int cloudfs_mknod(const char *path, mode_t mode, dev_t dev)
   /* every new file is marked as local and not dirty initially */
   int remote = 0;
   int dirty = 0;
-  lsetxattr(fpath, U_REMOTE, &remote, sizeof(int), XATTR_REPLACE);
-  lsetxattr(fpath, U_DIRTY, &dirty, sizeof(int), XATTR_REPLACE);
+  lsetxattr(fpath, U_REMOTE, &remote, sizeof(int), 0);
+  lsetxattr(fpath, U_DIRTY, &dirty, sizeof(int), 0);
 
   dbg_print("[DBG] cloudfs_mknod(path=\"%s\", mode=%d, dev=%llu)=%d",
       path, mode, dev, retval);
@@ -433,7 +483,7 @@ int cloudfs_write(const char *path, const char *buf, size_t size, off_t offset,
 
   if (cloudfs_is_in_cloud(fpath)) {
     int dirty = 1;
-    lsetxattr(fpath, U_DIRTY, &dirty, sizeof(int), XATTR_REPLACE);
+    lsetxattr(fpath, U_DIRTY, &dirty, sizeof(int), 0);
   }
 
   retval = pwrite(fi->fh, buf, size, offset);
@@ -484,7 +534,7 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
     cloudfs_get_key(fpath, key);
 
     /* read the latest attributes from the temporary file */
-    retval = stat(fpath, &sb);
+    retval = stat(tpath, &sb);
     if (retval < 0) {
       retval = cloudfs_error("cloudfs_release");
       return retval;
@@ -504,29 +554,25 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
       if (sb.st_size < State_.threshold) {
         /* move back to SSD */
 
-        /* read the old stat from proxy file */
-        struct stat old_stat;
-        retval = cloudfs_getattr(fpath, &old_stat);
-        if (retval < 0) {
-          return retval;
-        }
-
         /* delete the proxy file */
         retval = remove(fpath);
         if (retval < 0) {
-          retval = cloud_error("cloudfs_release");
+          retval = cloudfs_error("cloudfs_release");
           return retval;
         }
 
         /* move the temporary file to the original location on SSD */
         retval = rename(tpath, fpath);
         if (retval < 0) {
-          retval = cloud_error("cloudfs_release");
+          retval = cloudfs_error("cloudfs_release");
           return retval;
         }
 
         /* update attributes */
-        downgrade_attr(&old_stat, fpath);
+        int remote_attr = 0;
+        int dirty_attr = 0;
+        lsetxattr(fpath, U_REMOTE, &remote_attr, sizeof(int), 0);
+        lsetxattr(fpath, U_DIRTY, &dirty_attr, sizeof(int), 0);
 
         /* delete the file in the cloud */
         cloud_delete_object(BUCKET, key);
@@ -545,7 +591,7 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
         cloud_print_error();
 
         /* update attributes */
-        upgrade_attr(&stat, fpath);
+        cloudfs_upgrade_attr(&sb, fpath, UPDATE);
 
         /* remove the temporary file on SSD */
         retval = remove(tpath);
@@ -567,7 +613,7 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
   } else {
     /* local file */
 
-    /* read file attributes */
+    /* read the latest file attributes */
     retval = stat(fpath, &sb);
     if (retval < 0) {
       retval = cloudfs_error("cloudfs_release");
@@ -588,7 +634,7 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
       fclose(fp);
 
       /* update attributes */
-      upgrade_attr(&stat, fpath);
+      cloudfs_upgrade_attr(&sb, fpath, CREATE);
     }
   }
 
@@ -613,7 +659,7 @@ static struct fuse_operations Cloudfs_operations = {
 
 int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
   int argc = 0;
-  char *argv[10] = "";
+  char *argv[10];
 
   argv[argc] = (char *) malloc(128 * sizeof(char));
   strcpy(argv[argc++], fuse_runtime_name);
