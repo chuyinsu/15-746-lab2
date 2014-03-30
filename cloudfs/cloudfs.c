@@ -218,16 +218,24 @@ static int cloudfs_error(char *error_str)
 }
 
 /**
- * @brief Initializes the FUSE file system (cloudfs) by checking
- *        if the mount points are valid, and if all is well,
- *        it mounts the file system ready for usage.
+ * @brief Initializes the FUSE file system.
+ *        Currently its job is to create the bucket in the cloud.
+ * @param conn Unused parameter.
+ * @return NULL.
  */
 void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
 {
   cloud_init(State_.hostname);
+  cloud_create_bucket(BUCKET);
   return NULL;
 }
 
+/**
+ * @brief Clean up CloudFS.
+ *        This is called on CloudFS exit.
+ * @param data Unused parameter.
+ * @return Void.
+ */
 void cloudfs_destroy(void *data UNUSED) {
   cloud_destroy();
 }
@@ -724,7 +732,6 @@ int cloudfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 
 /* functions supported by CloudFS */
 static struct fuse_operations Cloudfs_operations = {
-  .init           = cloudfs_init,
   .getattr        = cloudfs_getattr,
   .getxattr       = cloudfs_getxattr,
   .setxattr       = cloudfs_setxattr,
@@ -736,6 +743,7 @@ static struct fuse_operations Cloudfs_operations = {
   .release        = cloudfs_release,
   .opendir        = cloudfs_opendir,
   .readdir        = cloudfs_readdir,
+  .init           = cloudfs_init,
   .destroy        = cloudfs_destroy
 };
 
