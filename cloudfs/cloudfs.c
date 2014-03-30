@@ -59,6 +59,7 @@
 #define U_MTIME ("user.st_mtime")
 #define U_CTIME ("user.st_ctime")
 #define U_REMOTE ("user.remote")
+#define U_DIRTY ("user.dirty")
 
 /* temporary path to store downloaded files from the cloud */
 #define TEMP_PATH ("/.tmp")
@@ -235,8 +236,8 @@ int cloudfs_getxattr(const char *path, const char *name, char *value,
     retval = cloudfs_error("cloudfs_getxattr");
   }
 
-  dbg_print("[DBG] cloudfs_getxattr(path=\"%s\", name=\"%s\", value=\"%s\", "
-      "size=%d)=%d", path, name, value, size, retval);
+  dbg_print("[DBG] cloudfs_getxattr(path=\"%s\", name=\"%s\", value=\"%s\","
+      " size=%d)=%d", path, name, value, size, retval);
 
   return retval;
 }
@@ -320,9 +321,11 @@ int cloudfs_mknod(const char *path, mode_t mode, dev_t dev)
     retval = cloudfs_error("cloudfs_mknod");
   }
 
-  /* every new file is marked as local initially */
+  /* every new file is marked as local and not dirty initially */
   int remote = 0;
+  int dirty = 0;
   lsetxattr(fpath, U_REMOTE, &remote, sizeof(int), XATTR_REPLACE);
+  lsetxattr(fpath, U_DIRTY, &dirty, sizeof(int), XATTR_REPLACE);
 
   dbg_print("[DBG] cloudfs_mknod(path=\"%s\", mode=%d, dev=%llu)=%d",
       path, mode, dev, retval);
@@ -393,30 +396,51 @@ int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
     retval = cloudfs_error("cloudfs_read");
   }
 
-  dbg_print("[DBG] cloudfs_read(path=\"%s\", buf=\"%s\", size=%d, offset=%llu, "
-      "fi=0x%08x)=%d", path, buf, size, offset, (unsigned int)fi, retval);
+  dbg_print("[DBG] cloudfs_read(path=\"%s\", buf=\"%s\", size=%d, offset=%llu,"
+      " fi=0x%08x)=%d", path, buf, size, offset, (unsigned int)fi, retval);
 
   return retval;
 }
 
-/*
- * Functions supported by cloudfs 
+/**
+ * @brief Write data to an opened file.
+ *        The underlying file descriptor has already been saved in "fi",
+ *        so here we can directly use it. Also, we need to set "user.dirty"
+ *        if this file is stored in the cloud.
+ * @param path Pathname of the file to write.
+ * @param buf The content to write.
+ * @param size Size of the content buffer.
+ * @param offset The beginning place to start writing.
+ * @param fi The information about the opened file.
+ * @return Number of bytes written on success, -errno otherwise.
  */
-static 
-struct fuse_operations Cloudfs_operations = {
+int cloudfs_write(const char *path, const char *buf, size_t size, off_t offset,
+    struct fuse_file_info *fi)
+{
+  int retval = 0;
+  char fpath[MAX_PATH_LEN] = "";
+
+  cloudfs_get_fullpath(path, fpath);
+
+  if (cloudfs_is_in_cloud(fpath)) {
+    int dirty = 1;
+    lsetxattr(fpath, U_DIRTY, &dirty, sizeof(int), XATTR_REPLACE);
+  }
+
+  retval = pwrite(fi->fh, buf, size, offset);
+  if (retval < 0) {
+    retval = cloudfs_error("cloudfs_write");
+  }
+
+  dbg_print("[DBG] cloudfs_write(path=\"%s\", buf=\"%s\", size=%d, offset=%llu,"
+      " fi=0x%08x)=%d", path, buf, size, offset, (unsigned int)fi, retval);
+
+  return retval;
+}
+
+/* functions supported by CloudFS */
+static struct fuse_operations Cloudfs_operations = {
   .init           = cloudfs_init,
-  //
-  // TODO
-  //
-  // This is where you add the VFS functions that your implementation of
-  // MelangsFS will support, i.e. replace 'NULL' with 'melange_operation'
-  // --- melange_getattr() and melange_init() show you what to do ...
-  //
-  // Different operations take different types of parameters. This list can
-  // be found at the following URL:
-  // --- http://fuse.sourceforge.net/doxygen/structfuse__operations.html
-  //
-  //
   .getattr        = cloudfs_getattr,
   .getxattr       = cloudfs_getxattr,
   .setxattr       = cloudfs_setxattr,
@@ -424,24 +448,27 @@ struct fuse_operations Cloudfs_operations = {
   .mknod          = cloudfs_mknod,
   .open           = cloudfs_open,
   .read           = cloudfs_read,
+  .write          = cloudfs_write,
   .readdir        = NULL,
   .destroy        = cloudfs_destroy
 };
 
-int cloudfs_start(struct cloudfs_state *state,
-    const char* fuse_runtime_name) {
-
+int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
   int argc = 0;
   char* argv[10];
+
   argv[argc] = (char *) malloc(128 * sizeof(char));
   strcpy(argv[argc++], fuse_runtime_name);
   argv[argc] = (char *) malloc(1024 * sizeof(char));
   strcpy(argv[argc++], state->fuse_path);
-  argv[argc++] = "-s"; // set the fuse mode to single thread
-  //argv[argc++] = "-f"; // run fuse in foreground 
+
+  /* set the fuse mode to single thread */
+  argv[argc++] = "-s";
+
+  /* run fuse in foreground */
+  //argv[argc++] = "-f";
 
   State_  = *state;
-
   int fuse_stat = fuse_main(argc, argv, &Cloudfs_operations, NULL);
 
   return fuse_stat;
