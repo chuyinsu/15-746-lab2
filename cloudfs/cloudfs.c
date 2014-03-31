@@ -837,6 +837,30 @@ int cloudfs_unlink(const char *path)
     retval = cloudfs_error("cloudfs_unlink");
   }
 
+  dbg_print("[DBG] cloudfs_unlink(path=\"%s\")=%d", path, retval);
+
+  return retval;
+}
+
+/**
+ * @brief Remove a directory.
+ * @param path Path of the directory.
+ * @return 0 on success, -errno otherwise.
+ */
+int cloudfs_rmdir(const char *path)
+{
+  int retval = 0;
+  char fpath[MAX_PATH_LEN] = "";
+
+  cloudfs_get_fullpath(path, fpath);
+
+  retval = rmdir(fpath);
+  if (retval < 0) {
+    retval = cloudfs_error("cloudfs_rmdir");
+  }
+
+  dbg_print("[DBG] cloudfs_rmdir(path=\"%s\")=%d", path, retval);
+
   return retval;
 }
 
@@ -858,7 +882,8 @@ static struct fuse_operations Cloudfs_operations = {
   .access         = cloudfs_access,
   .utimens        = cloudfs_utimens,
   .chmod          = cloudfs_chmod,
-  .unlink         = cloudfs_unlink
+  .unlink         = cloudfs_unlink,
+  .rmdir          = cloudfs_rmdir
 };
 
 int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
