@@ -4,7 +4,7 @@
  * @author Yinsu Chu (yinsuc)
  */
 
-#define _XOPEN_SOURCE 500 /* for blksize_t */
+#define _GNU_SOURCE
 
 #include <ctype.h>
 #include <dirent.h>
@@ -67,9 +67,6 @@
 /* bucket name in the cloud */
 #define BUCKET ("yinsuc")
 
-/* convert from directory type to stat mode */
-#define DT_TO_MODE(type) ((type) << 12)
-
 /* flags used when updating file attributes */
 typedef enum {
   CREATE,
@@ -78,8 +75,8 @@ typedef enum {
 
 static struct cloudfs_state State_;
 
-static int cloudfs_error(char *error_str);
-void cloudfs_get_key(const char *fpath, char *key);
+static int cloudfs_error(char *);
+void cloudfs_get_key(const char *, char *);
 
 /**
  * @brief Update the attributes of a proxy file.
@@ -693,7 +690,7 @@ int cloudfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
   do {
     memset(&sb, '\0', sizeof(struct stat));
     sb.st_ino = de->d_ino;
-    sb.st_mode = DT_TO_MODE(de->d_type);
+    sb.st_mode = DTTOIF(de->d_type);
     if (filler(buf, de->d_name, &sb, 0) != 0) {
       retval = -ENOMEM;
       return retval;
@@ -756,6 +753,33 @@ int cloudfs_access(const char *path, int mask)
     retval = cloudfs_error("cloudfs_access");
   }
 
+  dbg_print("[DBG] cloudfs_access(path=\"%s\", mask=%d)=%d", path, mask,
+      retval);
+
+  return retval;
+}
+
+/**
+ * @brief Change the access and modification times of a file.
+ * @param path Pathname of the file.
+ * @param tv The new times are specified here.
+ * @return 0 on success, -errno otherwise.
+ */
+int cloudfs_utimens(const char *path, const struct timespec tv[2])
+{
+  int retval = 0;
+  char fpath[MAX_PATH_LEN] = "";
+
+  cloudfs_get_fullpath(path, fpath);
+
+  retval = utimensat(0, fpath, tv, AT_SYMLINK_NOFOLLOW);
+  if (retval < 0) {
+    retval = cloudfs_error("cloudfs_utimens");
+  }
+
+  dbg_print("[DBG] cloudfs_utimens(path=\"%s\", tv=0x%08x)=%d", path,
+      (unsigned int) tv, retval);
+
   return retval;
 }
 
@@ -774,7 +798,8 @@ static struct fuse_operations Cloudfs_operations = {
   .readdir        = cloudfs_readdir,
   .init           = cloudfs_init,
   .destroy        = cloudfs_destroy,
-  .access         = cloudfs_access
+  .access         = cloudfs_access,
+  .utimens        = cloudfs_utimens
 };
 
 int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
