@@ -31,10 +31,10 @@
 #define UNUSED __attribute__((unused))
 
 /* a simple debugging utility,
- * uncomment the next line to display debugging information */
+ * uncomment the next line to log debugging information */
 #define DEBUG
 #ifdef DEBUG
-# define dbg_print(...) printf(__VA_ARGS__)
+# define dbg_print(...) fprintf(Log, __VA_ARGS__)
 #else
 # define dbg_print(...) 
 #endif
@@ -69,6 +69,9 @@
 /* bucket name in the cloud */
 #define BUCKET ("yinsuc")
 
+/* log file path */
+#define LOG_FILE ("/tmp/cloudfs.log")
+
 /* flags used when updating file attributes */
 typedef enum {
   CREATE,
@@ -76,9 +79,29 @@ typedef enum {
 } attr_flag_t;
 
 static struct cloudfs_state State_;
+static FILE *Log;
 
 static int cloudfs_error(char *);
 void cloudfs_get_key(const char *, char *);
+
+void print_stat(const struct stat *sb)
+{
+  dbg_print("[DBG] print stat 0x%08x\n", (unsigned int) sb);
+  dbg_print("      st_dev=%llu\n", sb->st_dev);
+  dbg_print("      st_ino=%llu\n", sb->st_ino);
+  dbg_print("      st_mode=%d\n", sb->st_mode);
+  dbg_print("      st_nlink=%d\n", sb->st_nlink);
+  dbg_print("      st_uid=%d\n", sb->st_uid);
+  dbg_print("      st_gid=%d\n", sb->st_gid);
+  dbg_print("      st_rdev=%llu\n", sb->st_rdev);
+  dbg_print("      st_size=%llu\n", sb->st_size);
+  dbg_print("      st_atime=%lu\n", sb->st_atime);
+  dbg_print("      st_mtime=%lu\n", sb->st_mtime);
+  dbg_print("      st_ctime=%lu\n", sb->st_ctime);
+  dbg_print("      st_blksize=%lu\n", sb->st_blksize);
+  dbg_print("      st_blocks=%llu\n", sb->st_blocks);
+  dbg_print("[DBG] --- end ---\n");
+}
 
 /**
  * @brief Update the attributes of a proxy file.
@@ -95,6 +118,10 @@ int cloudfs_upgrade_attr(struct stat *sp, char *fpath, attr_flag_t flag)
   int retval = 0;
   char *fn = "cloudfs_upgrade_attr";
 
+  dbg_print("[DBG] cloudfs_upgrade_attr(sp=0x%08x, fpath=\"%s\", flag=%d)\n",
+      (unsigned int) sp, fpath, flag);
+  print_stat(sp);
+
   if (flag == CREATE) {
     CK_ERR(lsetxattr(fpath, U_DEV, &sp->st_dev, sizeof(dev_t), 0), fn);
     CK_ERR(lsetxattr(fpath, U_INO, &sp->st_ino, sizeof(ino_t), 0), fn);
@@ -105,9 +132,9 @@ int cloudfs_upgrade_attr(struct stat *sp, char *fpath, attr_flag_t flag)
     CK_ERR(lsetxattr(fpath, U_RDEV, &sp->st_rdev, sizeof(dev_t), 0), fn);
     CK_ERR(lsetxattr(fpath, U_BLKSIZE, &sp->st_blksize, sizeof(blksize_t), 0),
         fn);
-    CK_ERR(lsetxattr(fpath, U_ATIME, &sp->st_atime, sizeof(time_t), 0), fn);
-    CK_ERR(lsetxattr(fpath, U_MTIME, &sp->st_mtime, sizeof(time_t), 0), fn);
-    CK_ERR(lsetxattr(fpath, U_CTIME, &sp->st_ctime, sizeof(time_t), 0), fn);
+    //CK_ERR(lsetxattr(fpath, U_ATIME, &sp->st_atime, sizeof(time_t), 0), fn);
+    //CK_ERR(lsetxattr(fpath, U_MTIME, &sp->st_mtime, sizeof(time_t), 0), fn);
+    //CK_ERR(lsetxattr(fpath, U_CTIME, &sp->st_ctime, sizeof(time_t), 0), fn);
   }
 
   CK_ERR(lsetxattr(fpath, U_SIZE, &sp->st_size, sizeof(off_t), 0), fn);
@@ -117,6 +144,9 @@ int cloudfs_upgrade_attr(struct stat *sp, char *fpath, attr_flag_t flag)
   CK_ERR(lsetxattr(fpath, U_REMOTE, &remote, sizeof(int), 0), fn);
   int dirty = 0;
   CK_ERR(lsetxattr(fpath, U_DIRTY, &dirty, sizeof(int), 0), fn);
+
+  dbg_print("cloudfs_upgrade_attr(sp=0x%08x, fpath=\"%s\", flag=%d)=%d\n",
+      (unsigned int) sp, fpath, flag, retval);
 
   return retval;
 }
@@ -133,7 +163,7 @@ void cloudfs_get_temppath(const char *fpath, char *tpath)
   cloudfs_get_key(fpath, key);
   snprintf(tpath, MAX_PATH_LEN, "%s/%s", TEMP_PATH, key);
 
-  dbg_print("cloudfs_get_temppath(fpath=\"%s\", tpath=\"%s\")", fpath, tpath);
+  dbg_print("cloudfs_get_temppath(fpath=\"%s\", tpath=\"%s\")\n", fpath, tpath);
 }
 
 /**
@@ -160,7 +190,7 @@ void cloudfs_get_key(const char *fpath, char *key)
     }
   }
 
-  dbg_print("cloudfs_get_key(fpath=\"%s\", key=\"%s\")", fpath, key);
+  dbg_print("cloudfs_get_key(fpath=\"%s\", key=\"%s\")\n", fpath, key);
 }
 
 /* callback function for downloading from the cloud */
@@ -200,7 +230,7 @@ static int cloudfs_is_in_cloud(char *fpath)
 void cloudfs_get_fullpath(const char *path, char *fullpath)
 {
   snprintf(fullpath, MAX_PATH_LEN, "%s%s", State_.ssd_path, path);
-  dbg_print("[DBG] cloudfs_get_fullpath(path=\"%s\", fullpath=\"%s\")",
+  dbg_print("[DBG] cloudfs_get_fullpath(path=\"%s\", fullpath=\"%s\")\n",
       path, fullpath);
 }
 
@@ -245,9 +275,9 @@ int cloudfs_getattr(const char *path, struct stat *sb)
     CK_ERR(lgetxattr(fpath, U_SIZE, &sb->st_size, sizeof(off_t)), fn);
     CK_ERR(lgetxattr(fpath, U_BLKSIZE, &sb->st_blksize, sizeof(blksize_t)), fn);
     CK_ERR(lgetxattr(fpath, U_BLOCKS, &sb->st_blocks, sizeof(blkcnt_t)), fn);
-    CK_ERR(lgetxattr(fpath, U_ATIME, &sb->st_atime, sizeof(time_t)), fn);
-    CK_ERR(lgetxattr(fpath, U_MTIME, &sb->st_mtime, sizeof(time_t)), fn);
-    CK_ERR(lgetxattr(fpath, U_CTIME, &sb->st_ctime, sizeof(time_t)), fn);
+    //CK_ERR(lgetxattr(fpath, U_ATIME, &sb->st_atime, sizeof(time_t)), fn);
+    //CK_ERR(lgetxattr(fpath, U_MTIME, &sb->st_mtime, sizeof(time_t)), fn);
+    //CK_ERR(lgetxattr(fpath, U_CTIME, &sb->st_ctime, sizeof(time_t)), fn);
   } else {
     retval = lstat(fpath, sb);
     if (retval < 0) {
@@ -286,7 +316,7 @@ int cloudfs_getxattr(const char *path, const char *name, char *value,
   }
 
   dbg_print("[DBG] cloudfs_getxattr(path=\"%s\", name=\"%s\", value=\"%s\","
-      " size=%d)=%d", path, name, value, size, retval);
+      " size=%d)=%d\n", path, name, value, size, retval);
 
   return retval;
 }
@@ -317,7 +347,7 @@ int cloudfs_setxattr(const char *path, const char *name, const char *value,
   }
 
   dbg_print("[DBG] cloudfs_setxattr(path=\"%s\", name=\"%s\", value=\"%s\","
-      "size=%d, flags=%d)=%d", path, name, value, size, flags, retval);
+      "size=%d, flags=%d)=%d\n", path, name, value, size, flags, retval);
 
   return retval;
 }
@@ -343,7 +373,7 @@ int cloudfs_mkdir(const char *path, mode_t mode)
     retval = cloudfs_error("cloudfs_mkdir");
   }
 
-  dbg_print("[DBG] cloudfs_mkdir(path=\"%s\", mode=%d)=%d", path, mode, retval);
+  dbg_print("[DBG] cloudfs_mkdir(path=\"%s\", mode=%d)=%d\n", path, mode, retval);
 
   return retval;
 }
@@ -376,7 +406,7 @@ int cloudfs_mknod(const char *path, mode_t mode, dev_t dev)
   lsetxattr(fpath, U_REMOTE, &remote, sizeof(int), 0);
   lsetxattr(fpath, U_DIRTY, &dirty, sizeof(int), 0);
 
-  dbg_print("[DBG] cloudfs_mknod(path=\"%s\", mode=%d, dev=%llu)=%d",
+  dbg_print("[DBG] cloudfs_mknod(path=\"%s\", mode=%d, dev=%llu)=%d\n",
       path, mode, dev, retval);
 
   return retval;
@@ -419,7 +449,7 @@ int cloudfs_open(const char *path, struct fuse_file_info *fi)
     retval = cloudfs_error("cloudfs_open");
   }
 
-  dbg_print("[DBG] cloudfs_open(path=\"%s\", fi=0x%08x)=%d",
+  dbg_print("[DBG] cloudfs_open(path=\"%s\", fi=0x%08x)=%d\n",
       path, (unsigned int) fi, retval);
 
   return retval;
@@ -447,7 +477,7 @@ int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
   }
 
   dbg_print("[DBG] cloudfs_read(path=\"%s\", buf=\"%s\", size=%d, offset=%llu,"
-      " fi=0x%08x)=%d", path, buf, size, offset, (unsigned int) fi, retval);
+      " fi=0x%08x)=%d\n", path, buf, size, offset, (unsigned int) fi, retval);
 
   return retval;
 }
@@ -482,8 +512,9 @@ int cloudfs_write(const char *path, const char *buf, size_t size, off_t offset,
     retval = cloudfs_error("cloudfs_write");
   }
 
-  dbg_print("[DBG] cloudfs_write(path=\"%s\", buf=\"%s\", size=%d, offset=%llu,"
-      " fi=0x%08x)=%d", path, buf, size, offset, (unsigned int) fi, retval);
+  dbg_print("[DBG] cloudfs_write(path=\"%s\", buf=0x%08x, size=%d, offset=%llu,"
+      " fi=0x%08x)=%d\n", path, (unsigned int) buf, size, offset,
+      (unsigned int) fi, retval);
 
   return retval;
 }
@@ -525,7 +556,7 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
     cloudfs_get_key(fpath, key);
 
     /* read the latest attributes from the temporary file */
-    retval = stat(tpath, &sb);
+    retval = lstat(tpath, &sb);
     if (retval < 0) {
       retval = cloudfs_error("cloudfs_release");
       return retval;
@@ -605,7 +636,7 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
     /* local file */
 
     /* read the latest file attributes */
-    retval = stat(fpath, &sb);
+    retval = lstat(fpath, &sb);
     if (retval < 0) {
       retval = cloudfs_error("cloudfs_release");
       return retval;
@@ -629,7 +660,7 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
     }
   }
 
-  dbg_print("[DBG] cloudfs_release(path=\"%s\", fi=0x%08x)=%d", path,
+  dbg_print("[DBG] cloudfs_release(path=\"%s\", fi=0x%08x)=%d\n", path,
       (unsigned int) fi, retval);
 
   return retval;
@@ -656,7 +687,7 @@ int cloudfs_opendir(const char *path, struct fuse_file_info *fi)
 
   fi->fh = (intptr_t) dp;
 
-  dbg_print("[DBG] cloudfs_opendir(path=\"%s\", fi=0x%08x)=%d", path,
+  dbg_print("[DBG] cloudfs_opendir(path=\"%s\", fi=0x%08x)=%d\n", path,
       (unsigned int) fi, retval);
 
   return retval;
@@ -700,7 +731,7 @@ int cloudfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
   } while ((de = readdir(dp)) != NULL);
 
   dbg_print("[DBG] cloudfs_readdir(path=\"%s\", buf=0x%08x, filler=0x%08x,"
-      " offset=%llu, fi=0x%08x)=%d", path, (unsigned int) buf,
+      " offset=%llu, fi=0x%08x)=%d\n", path, (unsigned int) buf,
       (unsigned int) filler, offset, (unsigned int) fi, retval);
 
   return retval;
@@ -719,7 +750,7 @@ void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
   cloud_create_bucket(BUCKET);
   cloud_print_error();
 
-  dbg_print("[DBG] cloudfs_init()");
+  dbg_print("[DBG] cloudfs_init()\n");
 
   return NULL;
 }
@@ -734,7 +765,7 @@ void cloudfs_destroy(void *data UNUSED) {
   cloud_destroy();
   cloud_print_error();
 
-  dbg_print("[DBG] cloudfs_destroy()");
+  dbg_print("[DBG] cloudfs_destroy()\n");
 }
 
 /**
@@ -756,7 +787,7 @@ int cloudfs_access(const char *path, int mask)
     retval = cloudfs_error("cloudfs_access");
   }
 
-  dbg_print("[DBG] cloudfs_access(path=\"%s\", mask=%d)=%d", path, mask,
+  dbg_print("[DBG] cloudfs_access(path=\"%s\", mask=%d)=%d\n", path, mask,
       retval);
 
   return retval;
@@ -781,7 +812,7 @@ int cloudfs_utimens(const char *path, const struct timespec tv[2])
     retval = cloudfs_error("cloudfs_utimens");
   }
 
-  dbg_print("[DBG] cloudfs_utimens(path=\"%s\", tv=0x%08x)=%d", path,
+  dbg_print("[DBG] cloudfs_utimens(path=\"%s\", tv=0x%08x)=%d\n", path,
       (unsigned int) tv, retval);
 
   return retval;
@@ -806,7 +837,7 @@ int cloudfs_chmod(const char *path, mode_t mode)
     retval = cloudfs_error("cloudfs_chmod");
   }
 
-  dbg_print("[DBG] cloudfs_chmod(path=\"%s\", mode=%d)=%d", path, mode, retval);
+  dbg_print("[DBG] cloudfs_chmod(path=\"%s\", mode=%d)=%d\n", path, mode, retval);
 
   return retval;
 }
@@ -837,7 +868,7 @@ int cloudfs_unlink(const char *path)
     retval = cloudfs_error("cloudfs_unlink");
   }
 
-  dbg_print("[DBG] cloudfs_unlink(path=\"%s\")=%d", path, retval);
+  dbg_print("[DBG] cloudfs_unlink(path=\"%s\")=%d\n", path, retval);
 
   return retval;
 }
@@ -859,33 +890,7 @@ int cloudfs_rmdir(const char *path)
     retval = cloudfs_error("cloudfs_rmdir");
   }
 
-  dbg_print("[DBG] cloudfs_rmdir(path=\"%s\")=%d", path, retval);
-
-  return retval;
-}
-
-/**
- * @brief Change the owner and group of a file.
- *        Currently only implemented for files on SSD.
- * @param path Pathname of the file.
- * @param uid The new owner's user ID.
- * @param gid The new group ID.
- * @return 0 on success, -errno otherwise.
- */
-int cloudfs_chown(const char *path, uid_t uid, gid_t gid)
-{
-  int retval = 0;
-  char fpath[MAX_PATH_LEN] = "";
-
-  cloudfs_get_fullpath(path, fpath);
-
-  retval = chown(path, uid, gid);
-  if (retval < 0) {
-    retval = cloudfs_error("cloudfs_chown");
-  }
-
-  dbg_print("[DBG] cloudfs_chown(path=\"%s\", uid=%d, gid=%d)=%d", path, uid,
-      gid, retval);
+  dbg_print("[DBG] cloudfs_rmdir(path=\"%s\")=%d\n", path, retval);
 
   return retval;
 }
@@ -909,8 +914,7 @@ static struct fuse_operations Cloudfs_operations = {
   .utimens        = cloudfs_utimens,
   .chmod          = cloudfs_chmod,
   .unlink         = cloudfs_unlink,
-  .rmdir          = cloudfs_rmdir,
-  .chown          = cloudfs_chown
+  .rmdir          = cloudfs_rmdir
 };
 
 int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
@@ -929,6 +933,16 @@ int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
   //argv[argc++] = "-f";
 
   State_ = *state;
+
+  /* eliminate extra slash */
+  if (State_.ssd_path[strlen(State_.ssd_path) - 1] == '/') {
+    State_.ssd_path[strlen(State_.ssd_path) - 1] = '\0';
+  }
+
+  /* initialize log file and set as line buffered */
+  Log = fopen(LOG_FILE, "wb");
+  setvbuf(Log, NULL, _IOLBF, 0);
+
   int fuse_stat = fuse_main(argc, argv, &Cloudfs_operations, NULL);
 
   return fuse_stat;
