@@ -864,6 +864,32 @@ int cloudfs_rmdir(const char *path)
   return retval;
 }
 
+/**
+ * @brief Change the owner and group of a file.
+ *        Currently only implemented for files on SSD.
+ * @param path Pathname of the file.
+ * @param uid The new owner's user ID.
+ * @param gid The new group ID.
+ * @return 0 on success, -errno otherwise.
+ */
+int cloudfs_chown(const char *path, uid_t uid, gid_t gid)
+{
+  int retval = 0;
+  char fpath[MAX_PATH_LEN] = "";
+
+  cloudfs_get_fullpath(path, fpath);
+
+  retval = chown(path, uid, gid);
+  if (retval < 0) {
+    retval = cloudfs_error("cloudfs_chown");
+  }
+
+  dbg_print("[DBG] cloudfs_chown(path=\"%s\", uid=%d, gid=%d)=%d", path, uid,
+      gid, retval);
+
+  return retval;
+}
+
 /* functions supported by CloudFS */
 static struct fuse_operations Cloudfs_operations = {
   .getattr        = cloudfs_getattr,
@@ -883,7 +909,8 @@ static struct fuse_operations Cloudfs_operations = {
   .utimens        = cloudfs_utimens,
   .chmod          = cloudfs_chmod,
   .unlink         = cloudfs_unlink,
-  .rmdir          = cloudfs_rmdir
+  .rmdir          = cloudfs_rmdir,
+  .chown          = cloudfs_chown
 };
 
 int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
