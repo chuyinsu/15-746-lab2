@@ -64,7 +64,7 @@
 #define U_DIRTY ("user.dirty")
 
 /* temporary path to store downloaded files from the cloud */
-#define TEMP_PATH ("/.tmp")
+#define TEMP_PATH ("/tmp")
 
 /* bucket name in the cloud */
 #define BUCKET ("yinsuc")
@@ -548,12 +548,11 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
   }
 
   cloudfs_get_fullpath(path, fpath);
+  cloudfs_get_temppath(fpath, tpath);
+  cloudfs_get_key(fpath, key);
 
   if (cloudfs_is_in_cloud(fpath)) {
     /* cloud file */
-
-    cloudfs_get_temppath(fpath, tpath);
-    cloudfs_get_key(fpath, key);
 
     /* read the latest attributes from the temporary file */
     retval = lstat(tpath, &sb);
