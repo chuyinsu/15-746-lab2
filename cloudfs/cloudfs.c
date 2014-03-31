@@ -739,6 +739,7 @@ void cloudfs_destroy(void *data UNUSED) {
 
 /**
  * @brief Check file access permissions.
+ *        Currently only implemented for files on SSD.
  * @param path Pathname of the file.
  * @param mask The permissions to check.
  * @return 0 on permitted, -errno otherwise.
@@ -763,6 +764,7 @@ int cloudfs_access(const char *path, int mask)
 
 /**
  * @brief Change the access and modification times of a file.
+ *        Currently only implemented for files on SSD.
  * @param path Pathname of the file.
  * @param tv The new times are specified here.
  * @return 0 on success, -errno otherwise.
@@ -787,6 +789,7 @@ int cloudfs_utimens(const char *path, const struct timespec tv[2])
 
 /**
  * @brief Change the permission bits of a file.
+ *        Currently only implemented for files on SSD.
  * @param path Pathname of the file.
  * @param mode The new permission bits.
  * @return 0 on success, -errno otherwise.
@@ -808,6 +811,35 @@ int cloudfs_chmod(const char *path, mode_t mode)
   return retval;
 }
 
+/**
+ * @brief Remove a file.
+ *        For files in the cloud, need to delete both proxy file on SSD
+ *        and the actual file content stored in the cloud.
+ * @param path Pathname of the file.
+ * @return 0 on success, -errno otherwise.
+ */
+int cloudfs_unlink(const char *path)
+{
+  int retval = 0;
+  char fpath[MAX_PATH_LEN] = "";
+  char key[MAX_PATH_LEN] = "";
+
+  cloudfs_get_fullpath(path, fpath);
+
+  if (cloudfs_is_in_cloud(fpath)) {
+    cloudfs_get_key(fpath, key);
+    cloud_delete_object(BUCKET, key);
+    cloud_print_error();
+  }
+
+  retval = unlink(fpath);
+  if (retval < 0) {
+    retval = cloudfs_error("cloudfs_unlink");
+  }
+
+  return retval;
+}
+
 /* functions supported by CloudFS */
 static struct fuse_operations Cloudfs_operations = {
   .getattr        = cloudfs_getattr,
@@ -825,7 +857,8 @@ static struct fuse_operations Cloudfs_operations = {
   .destroy        = cloudfs_destroy,
   .access         = cloudfs_access,
   .utimens        = cloudfs_utimens,
-  .chmod          = cloudfs_chmod
+  .chmod          = cloudfs_chmod,
+  .unlink         = cloudfs_unlink
 };
 
 int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
