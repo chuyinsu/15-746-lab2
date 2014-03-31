@@ -1,6 +1,8 @@
 /**
  * @file cloudfs.c
  * @brief 15-746 Spring 2014 Project 2 - Hybrid Cloud Storage System
+ *        Reference: Writing a FUSE Filesystem: a Tutorial
+ *        (http://www.cs.nmsu.edu/~pfeiffer/fuse-tutorial)
  * @author Yinsu Chu (yinsuc)
  */
 
@@ -783,6 +785,29 @@ int cloudfs_utimens(const char *path, const struct timespec tv[2])
   return retval;
 }
 
+/**
+ * @brief Change the permission bits of a file.
+ * @param path Pathname of the file.
+ * @param mode The new permission bits.
+ * @return 0 on success, -errno otherwise.
+ */
+int cloudfs_chmod(const char *path, mode_t mode)
+{
+  int retval = 0;
+  char fpath[MAX_PATH_LEN] = "";
+
+  cloudfs_get_fullpath(path, fpath);
+
+  retval = chmod(fpath, mode);
+  if (retval < 0) {
+    retval = cloudfs_error("cloudfs_chmod");
+  }
+
+  dbg_print("[DBG] cloudfs_chmod(path=\"%s\", mode=%d)=%d", path, mode, retval);
+
+  return retval;
+}
+
 /* functions supported by CloudFS */
 static struct fuse_operations Cloudfs_operations = {
   .getattr        = cloudfs_getattr,
@@ -799,7 +824,8 @@ static struct fuse_operations Cloudfs_operations = {
   .init           = cloudfs_init,
   .destroy        = cloudfs_destroy,
   .access         = cloudfs_access,
-  .utimens        = cloudfs_utimens
+  .utimens        = cloudfs_utimens,
+  .chmod          = cloudfs_chmod
 };
 
 int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
