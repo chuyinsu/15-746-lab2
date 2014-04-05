@@ -28,16 +28,9 @@
 #include "cloudfs.h"
 #include "dedup.h"
 
-#define UNUSED __attribute__((unused))
+#include "hashtable.h"
 
-/* a simple debugging utility,
- * uncomment the next line to log debugging information */
-//#define DEBUG
-#ifdef DEBUG
-# define dbg_print(...) fprintf(Log, __VA_ARGS__)
-#else
-# define dbg_print(...) 
-#endif
+#define UNUSED __attribute__((unused))
 
 /* to check error return of many function calls in a row,
  * such as in cloudfs_getattr(). */
@@ -64,7 +57,7 @@
 #define U_DIRTY ("user.dirty")
 
 /* temporary path to store downloaded files from the cloud */
-#define TEMP_PATH ("/tmp")
+#define TEMP_PATH ("/.tmp")
 
 /* bucket name in the cloud */
 #define BUCKET ("yinsuc")
@@ -80,9 +73,10 @@ typedef enum {
 
 static struct cloudfs_state State_;
 static FILE *Log;
+static char Temp_path[MAX_PATH_LEN];
+static char Bkt_prfx[MAX_PATH_LEN];
 
-static int cloudfs_error(char *);
-void cloudfs_get_key(const char *, char *);
+void cloudfs_get_key(const char *fpath, char *key);
 
 #ifdef DEBUG
 void print_stat(const struct stat *sb)
@@ -151,7 +145,7 @@ int cloudfs_upgrade_attr(struct stat *sp, char *fpath, attr_flag_t flag)
   int dirty = 0;
   CK_ERR(lsetxattr(fpath, U_DIRTY, &dirty, sizeof(int), 0), fn);
 
-  dbg_print("cloudfs_upgrade_attr(sp=0x%08x, fpath=\"%s\", flag=%d)=%d\n",
+  dbg_print("[DBG] cloudfs_upgrade_attr(sp=0x%08x, fpath=\"%s\", flag=%d)=%d\n",
       (unsigned int) sp, fpath, flag, retval);
 
   return retval;
@@ -167,9 +161,10 @@ void cloudfs_get_temppath(const char *fpath, char *tpath)
 {
   char key[MAX_PATH_LEN] = "";
   cloudfs_get_key(fpath, key);
-  snprintf(tpath, MAX_PATH_LEN, "%s/%s", TEMP_PATH, key);
+  snprintf(tpath, MAX_PATH_LEN, "%s%s", Temp_path, key);
 
-  dbg_print("cloudfs_get_temppath(fpath=\"%s\", tpath=\"%s\")\n", fpath, tpath);
+  dbg_print("[DBG] cloudfs_get_temppath(fpath=\"%s\", tpath=\"%s\")\n", fpath,
+      tpath);
 }
 
 /**
@@ -196,7 +191,7 @@ void cloudfs_get_key(const char *fpath, char *key)
     }
   }
 
-  dbg_print("cloudfs_get_key(fpath=\"%s\", key=\"%s\")\n", fpath, key);
+  dbg_print("[DBG] cloudfs_get_key(fpath=\"%s\", key=\"%s\")\n", fpath, key);
 }
 
 /* callback function for downloading from the cloud */
@@ -245,7 +240,7 @@ void cloudfs_get_fullpath(const char *path, char *fullpath)
  * @param error_str The error message passed from the caller.
  * @return FUSE error return value (-errno).
  */
-static int cloudfs_error(char *error_str)
+int cloudfs_error(char *error_str)
 {
   int retval = -errno;
   fprintf(stderr, "[ERR] %s : %s\n", error_str, strerror(errno));
@@ -390,7 +385,8 @@ int cloudfs_mkdir(const char *path, mode_t mode)
     retval = cloudfs_error("cloudfs_mkdir");
   }
 
-  dbg_print("[DBG] cloudfs_mkdir(path=\"%s\", mode=%d)=%d\n", path, mode, retval);
+  dbg_print("[DBG] cloudfs_mkdir(path=\"%s\", mode=%d)=%d\n", path, mode,
+      retval);
 
   return retval;
 }
@@ -755,19 +751,16 @@ int cloudfs_readdir(const char *path UNUSED, void *buf, fuse_fill_dir_t filler,
 
 /**
  * @brief Initializes the FUSE file system.
- *        Currently its job is to create the bucket in the cloud.
+ *        Currently it does nothing, all important
+ *        initializations are placed into cloudfs_start().
+ *        The reason is that if any of them fails,
+ *        CloudFS should abort instead of continuing to run.
  * @param conn Unused parameter.
  * @return NULL.
  */
 void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
 {
-  cloud_init(State_.hostname);
-  cloud_print_error();
-  cloud_create_bucket(BUCKET);
-  cloud_print_error();
-
   dbg_print("[DBG] cloudfs_init()\n");
-
   return NULL;
 }
 
@@ -853,7 +846,8 @@ int cloudfs_chmod(const char *path, mode_t mode)
     retval = cloudfs_error("cloudfs_chmod");
   }
 
-  dbg_print("[DBG] cloudfs_chmod(path=\"%s\", mode=%d)=%d\n", path, mode, retval);
+  dbg_print("[DBG] cloudfs_chmod(path=\"%s\", mode=%d)=%d\n", path, mode,
+      retval);
 
   return retval;
 }
@@ -958,6 +952,35 @@ int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
   /* initialize log file and set as line buffered */
   Log = fopen(LOG_FILE, "wb");
   setvbuf(Log, NULL, _IOLBF, 0);
+
+  /* initialize temporary directory */
+  memset(Temp_path, '\0', MAX_PATH_LEN);
+  snprintf(Temp_path, MAX_PATH_LEN, "%s%s", State_.ssd_path, TEMP_PATH);
+  dbg_print("[DBG] Temp_path=%s\n", Temp_path);
+  if (mkdir(Temp_path, DEFAULT_MODE) < 0) {
+    if (errno != EEXIST) {
+      dbg_print("[ERR] failed to create temporary directory\n");
+      exit(EXIT_FAILURE);
+    }
+  }
+
+  memset(Bkt_prfx, '\0', MAX_PATH_LEN);
+  snprintf(Bkt_prfx, MAX_PATH_LEN, "%s/%s", Temp_path, "bucket");
+  dbg_print("[DBG] Bkt_prfx=%s\n", Bkt_prfx);
+
+  S3Status s3status = S3StatusOK;
+  s3status = cloud_init(State_.hostname);
+  if (s3status != S3StatusOK) {
+    dbg_print("[ERR] failed to initialize cloud service\n");
+    cloud_print_error();
+    exit(EXIT_FAILURE);
+  }
+  s3status = cloud_create_bucket(BUCKET);
+  if (s3status != S3StatusOK && s3status != S3StatusHttpErrorForbidden) {
+    dbg_print("[ERR] failed to create bucket\n");
+    cloud_print_error();
+    exit(EXIT_FAILURE);
+  }
 
   int fuse_stat = fuse_main(argc, argv, &Cloudfs_operations, NULL);
 

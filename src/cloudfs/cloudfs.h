@@ -4,6 +4,8 @@
 #define MAX_PATH_LEN 4096
 #define MAX_HOSTNAME_LEN 1024
 
+#include <openssl/md5.h>
+
 struct cloudfs_state {
   char ssd_path[MAX_PATH_LEN];
   char fuse_path[MAX_PATH_LEN];
@@ -21,4 +23,26 @@ struct cloudfs_state {
 int cloudfs_start(struct cloudfs_state* state,
                   const char* fuse_runtime_name);  
 void cloudfs_get_fullpath(const char *path, char *fullpath);
+int cloudfs_error(char *error_str);
+
+/* a simple debugging utility,
+ * uncomment the next line to log debugging information */
+#define DEBUG
+#ifdef DEBUG
+# define dbg_print(...) fprintf(Log, __VA_ARGS__)
+#else
+# define dbg_print(...) 
 #endif
+
+/* structure of the key for deduplication hash table,
+ * represents a segment of a file */
+struct cloudfs_seg {
+  int ref_count;
+  int seg_size;
+  unsigned char md5[MD5_DIGEST_LENGTH];
+};
+
+#define DEFAULT_MODE (0777)
+
+#endif
+
