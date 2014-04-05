@@ -21,7 +21,7 @@ struct cloudfs_state {
 };
 
 int cloudfs_start(struct cloudfs_state* state,
-                  const char* fuse_runtime_name);  
+    const char* fuse_runtime_name);  
 void cloudfs_get_fullpath(const char *path, char *fullpath);
 int cloudfs_error(char *error_str);
 

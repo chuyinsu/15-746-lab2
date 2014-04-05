@@ -772,8 +772,7 @@ void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
  */
 void cloudfs_destroy(void *data UNUSED) {
   cloud_destroy();
-  cloud_print_error();
-
+  ht_destroy();
   dbg_print("[DBG] cloudfs_destroy()\n");
 }
 
@@ -983,6 +982,21 @@ int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
   }
 
   int fuse_stat = fuse_main(argc, argv, &Cloudfs_operations, NULL);
+
+  /*
+     if (ht_init(Bkt_prfx, 10, 48, Log) < 0) {
+     printf("error\n");
+     return -1;
+     }
+     struct cloudfs_seg seg;
+     seg.ref_count = 100;
+     seg.seg_size = 1000;
+     strncpy((char *)seg.md5, "1234123412341234", MD5_DIGEST_LENGTH);
+     if (ht_insert(&seg) < 0) {
+     printf("error\n");
+     return -1;
+     }
+     */
 
   return fuse_stat;
 }

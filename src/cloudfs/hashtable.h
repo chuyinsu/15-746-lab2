@@ -3,6 +3,7 @@
 
 int ht_init(char *bkt_prfx, int bkt_num, int bkt_size, FILE *log);
 int ht_insert(struct cloudfs_seg *segp);
+void ht_destroy(void);
 
 #endif
 

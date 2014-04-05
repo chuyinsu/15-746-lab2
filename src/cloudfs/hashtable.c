@@ -240,14 +240,13 @@ int ht_insert(struct cloudfs_seg *segp)
     dbg_print("[DBG] prev_stretch_factor=%d\n", prev_stretch_factor);
 
     /* now stretch it again */
-    retval = stretch_bucket(fd, prev_stretch_factor + 1);
-    if (retval < 0) {
-      return retval;
-    }
-
     fd = open(bucket, O_RDWR);
     if (fd < 0) {
       retval = cloudfs_error("ht_insert - open");
+      return retval;
+    }
+    retval = stretch_bucket(fd, prev_stretch_factor + 1);
+    if (retval < 0) {
       return retval;
     }
 
@@ -267,7 +266,9 @@ int ht_insert(struct cloudfs_seg *segp)
   }
 
   dbg_print("[DBG] inserting segment\n");
+#ifdef DEBUG
   print_seg(segp);
+#endif
 
   struct cloudfs_seg *slotp = (struct cloudfs_seg *)
     (Buckets[bucket_id] + (num_item) * sizeof(struct cloudfs_seg));
@@ -280,6 +281,8 @@ int ht_insert(struct cloudfs_seg *segp)
     retval = cloudfs_error("ht_insert - lgetxattr");
     return retval;
   }
+
+  msync(slotp, sizeof(struct cloudfs_seg), MS_SYNC);
 
   dbg_print("[DBG] ht_insert(segp=0x%08x)=%d\n", (unsigned int) segp, retval);
 
