@@ -3,7 +3,10 @@
  * @brief A persistent hash table implementation. Each bucket in the hash table
  *        is a file, and all buckets are mmap-ed upon file system starting.
  *        Any changes to the hash table is made first in the memory region
- *        of the file and then msync-ed to disk.
+ *        of the file and then msync-ed to disk. Inside each bucket, there are
+ *        multiple slots where one slot can hold one cloudfs_seg structure.
+ *        When all slots in a bucket are used up, this bucket will be enlarged
+ *        to be twice the previous size.
  * @author Yinsu Chu (yinsuc)
  */
 
@@ -23,12 +26,8 @@ static int Bkt_num;
 static int Bkt_size;
 static FILE *Log;
 
-/* store the mmap addresses of each bucket */
+/* store the mmap addresses of each bucket file */
 static void **Buckets;
-
-/* extended attribute to mark how many items are
- * currently stored inside a bucket file */
-#define U_ITEM ("user.item")
 
 #ifdef DEBUG
 void print_seg(struct cloudfs_seg *segp)
@@ -49,28 +48,134 @@ void print_seg(struct cloudfs_seg *segp)
 /**
  * @brief Enlarge the size of a bucket file.
  *        This is done when the bucket file is initially created,
- *        or when there is no enough room to insert segments.
- * @param fd The descriptor of the bucket file.
- * @param stretch_factor Number to multiply when enlarging the file.
- *                       This corresponds to how many times this file
- *                       has been enlarged.
+ *        or when there is not enough room to insert segments.
+ * @param bucket Pathname of the bucket file.
+ * @param create If set, this file will be newly created.
  * @return 0 on success, -errno otherwise.
  */
-static int stretch_bucket(int fd, int stretch_factor)
+static int stretch_bucket(char *bucket, int create)
 {
   int retval = 0;
 
-  if (lseek(fd, stretch_factor * Bkt_size - 1, SEEK_SET) < 0) {
+  /* create or open the bucket file */
+  int fd = 0;
+  if (create) {
+    fd = open(bucket, O_RDWR | O_CREAT | O_EXCL, DEFAULT_MODE);
+  } else {
+    fd = open(bucket, O_RDWR);
+  }
+  if (fd < 0) {
+    retval = cloudfs_error("stretch_bucket - open");
+    return retval;
+  }
+
+  /* read the file size */
+  struct stat sb;
+  retval = fstat(fd, &sb);
+  if (retval < 0) {
+    retval = cloudfs_error("stretch_bucket - fstat");
+    return retval;
+  }
+  dbg_print("[DBG] size of the file to stretch: %llu\n", sb.st_size);
+
+  /* calculate the target size to stretch to */
+  int target_size = sb.st_size * 2;
+  if (target_size <= 0) {
+    target_size = Bkt_size;
+  }
+  dbg_print("[DBG] stretch target size: %d\n", target_size);
+
+  /* stretch the file */
+  if (lseek(fd, target_size - 1, SEEK_SET) < 0) {
     retval = cloudfs_error("stretch_bucket - lseek");
     return retval;
   }
+
+  /* mark the end of the file to make the stretch effective */
   if (write(fd, "\0", 1) < 0) {
     retval = cloudfs_error("stretch_bucket - write");
     return retval;
   }
 
-  dbg_print("[DBG] stretch_bucket(fd=%d, stretch_factor=%d)=%d\n",
-      fd, stretch_factor, retval);
+  /* close the file */
+  retval = close(fd);
+  if (retval < 0) {
+    retval = cloudfs_error("add_slots - close");
+    return retval;
+  }
+
+  dbg_print("[DBG] stretch_bucket(fd=%d)=%d\n", fd, retval);
+
+  return retval;
+}
+
+/**
+ * @brief Fill empty segment slots to the second half of a bucket or all bucket.
+ * @param bucket Pathname of the bucket file.
+ * @param all If set, fill the entire file instead of the second half.
+ * @return 0 on success, -errno otherwise.
+ */
+static int add_slots(char *bucket, int all)
+{
+  int retval = 0;
+
+  /* open the bucket file */
+  int fd = 0;
+  fd = open(bucket, O_RDWR);
+  if (fd < 0) {
+    retval = cloudfs_error("add_slots - open");
+    return retval;
+  }
+
+  /* read the file size */
+  struct stat sb;
+  retval = fstat(fd, &sb);
+  if (retval < 0) {
+    retval = cloudfs_error("add_slots - fstat");
+    return retval;
+  }
+  dbg_print("[DBG] size of the file to add slots: %llu\n", sb.st_size);
+
+  /* starting point to fill */
+  int start_size = all ? 0 : (sb.st_size / 2);
+
+  /* how many slots to fill */
+  int num_slots = sb.st_size / sizeof(struct cloudfs_seg);
+  if (!all) {
+    num_slots /= 2;
+  }
+  dbg_print("[DBG] number of slots to fill: %d\n", num_slots);
+
+  void *mstart = NULL;
+  mstart = mmap(NULL, sb.st_size, PROT_WRITE, MAP_SHARED, fd, 0);
+  if (mstart == MAP_FAILED) {
+    retval = cloudfs_error("add_slots - mmap");
+    return retval;
+  }
+
+  /* no more need of the file descriptor */
+  retval = close(fd);
+  if (retval < 0) {
+    retval = cloudfs_error("add_slots - close");
+    return retval;
+  }
+
+  /* fill in empty slots */
+  int i = 0;
+  for (i = 0; i < num_slots; i++) {
+    struct cloudfs_seg *slotp = (struct cloudfs_seg *)
+      (mstart + start_size + i * sizeof(struct cloudfs_seg));
+    slotp->ref_count = 0;
+    slotp->seg_size = 0;
+    memcpy(slotp->md5, "fakefakefakefake", MD5_DIGEST_LENGTH);
+  }
+
+  /* unmap the bucket, sync to disk */
+  retval = munmap(mstart, sb.st_size);
+  if (retval < 0) {
+    retval = cloudfs_error("add_slots - munmap");
+    return retval;
+  }
 
   return retval;
 }
@@ -94,7 +199,6 @@ int ht_init(char *bkt_prfx, int bkt_num, int bkt_size, FILE *log)
   int fd = 0;
   int i = 0;
   char bkt_file[MAX_PATH_LEN] = "";
-  int map_size = 0;
 
   /* initialize static global variables */
   memset(Bkt_prfx, '\0', MAX_PATH_LEN);
@@ -117,46 +221,31 @@ int ht_init(char *bkt_prfx, int bkt_num, int bkt_size, FILE *log)
     snprintf(bkt_file, MAX_PATH_LEN, "%s%d", bkt_prfx, i);
     if (access(bkt_file, F_OK) < 0) {
       dbg_print("[DBG] bucket file %s does not exist\n", bkt_file);
-
-      /* if a bucket file dose not exist, it has to be created and
-       * stretched to an initial size */
-      fd = open(bkt_file, O_RDWR | O_CREAT | O_EXCL, 0666);
-      if (fd < 0) {
-        retval = cloudfs_error("ht_init - open");
-        return retval;
-      }
-      retval = stretch_bucket(fd, 1);
+      retval = stretch_bucket(bkt_file, 1);
       if (retval < 0) {
         return retval;
       }
-
-      /* set the initial items stored in the bucket to be zero */
-      int num_item = 0;
-      if (fsetxattr(fd, U_ITEM, &num_item, sizeof(int), 0) < 0) {
-        retval = cloudfs_error("ht_init - fsetxattr");
+      retval = add_slots(bkt_file, 1);
+      if (retval < 0) {
         return retval;
       }
-
-      map_size = bkt_size;
     } else {
       dbg_print("[DBG] bucket file %s exists\n", bkt_file);
-      fd = open(bkt_file, O_RDWR);
-      if (fd < 0) {
-        retval = cloudfs_error("ht_init - open");
-        return retval;
-      }
-
-      struct stat sb;
-      retval = fstat(fd, &sb);
-      if (retval < 0) {
-        retval = cloudfs_error("ht_init - fstat");
-        return retval;
-      }
-
-      map_size = sb.st_size;
     }
 
-    Buckets[i] = mmap(NULL, map_size, PROT_WRITE, MAP_SHARED, fd, 0);
+    fd = open(bkt_file, O_RDWR);
+    if (fd < 0) {
+      retval = cloudfs_error("ht_init - open");
+      return retval;
+    }
+    struct stat sb;
+    retval = fstat(fd, &sb);
+    if (retval < 0) {
+      retval = cloudfs_error("ht_init - fstat");
+      return retval;
+    }
+
+    Buckets[i] = mmap(NULL, sb.st_size, PROT_WRITE, MAP_SHARED, fd, 0);
     if (Buckets[i] == MAP_FAILED) {
       retval = cloudfs_error("ht_init - mmap");
       return retval;
@@ -189,12 +278,16 @@ static int hash_value(unsigned char *md5)
   for (i = 0; i < MD5_DIGEST_LENGTH; i++) {
     sum += (int) md5[i];
   }
-  dbg_print("[DBG] hash_value=%d\n", sum);
+  dbg_print("[DBG] hash value is %d\n", sum);
   return sum;
 }
 
 /**
  * @brief Inserts a segment into the hash table.
+ *        Insertion is done by iterating each slot
+ *        in the bucket. If some slot's "ref_count"
+ *        field is zero, insert there; if all slots
+ *        are occupied, stretch the bucket.
  * @param segp Pointer to the segment to insert.
  * @return 0 on success, -1 otherwise.
  */
@@ -202,19 +295,12 @@ int ht_insert(struct cloudfs_seg *segp)
 {
   int retval = 0;
   int bucket_id = 0;
-  int fd = 0;
+  int i = 0;
   char bucket[MAX_PATH_LEN] = "";
 
   bucket_id = hash_value(segp->md5) % Bkt_num;
   snprintf(bucket , MAX_PATH_LEN, "%s%d", Bkt_prfx, bucket_id);
   dbg_print("[DBG] target bucket file is %s\n", bucket);
-
-  int num_item = 0;
-  if (lgetxattr(bucket, U_ITEM, &num_item, sizeof(int)) < 0) {
-    retval = cloudfs_error("ht_insert - lgetxattr");
-    return retval;
-  }
-  dbg_print("[DBG] this bucket currently holds %d items\n", num_item);
 
   struct stat sb;
   retval = lstat(bucket, &sb);
@@ -222,67 +308,70 @@ int ht_insert(struct cloudfs_seg *segp)
     retval = cloudfs_error("ht_insert - lstat");
     return retval;
   }
-  dbg_print("[DBG] bucket file stat read, st_size=%llu\n", sb.st_size);
-
-  if (num_item >= (sb.st_size / sizeof(struct cloudfs_seg))) {
-    dbg_print("[DBG] bucket is full\n");
-    if (munmap(Buckets[bucket_id], sb.st_size) < 0) {
-      retval = cloudfs_error("ht_insert - munmap");
-      return retval;
-    }
-
-    /* how many items does a bucket of default size can hold */
-    int base = Bkt_size / sizeof(struct cloudfs_seg);
-    dbg_print("[DBG] base=%d\n", base);
-
-    /* the number of times this bucket has been stretched */
-    int prev_stretch_factor = num_item / base;
-    dbg_print("[DBG] prev_stretch_factor=%d\n", prev_stretch_factor);
-
-    /* now stretch it again */
-    fd = open(bucket, O_RDWR);
-    if (fd < 0) {
-      retval = cloudfs_error("ht_insert - open");
-      return retval;
-    }
-    retval = stretch_bucket(fd, prev_stretch_factor + 1);
-    if (retval < 0) {
-      return retval;
-    }
-
-    /* map the bucket file again */
-    Buckets[bucket_id] = mmap(NULL, (prev_stretch_factor + 1) * Bkt_size,
-        PROT_WRITE, MAP_SHARED, fd, 0);
-    if (Buckets[bucket_id] == MAP_FAILED) {
-      retval = cloudfs_error("ht_init - mmap");
-      return retval;
-    }
-    dbg_print("[DBG] file remapped\n");
-
-    if (close(fd) < 0) {
-      retval = cloudfs_error("ht_insert - close");
-      return retval;
-    }
-  }
+  dbg_print("[DBG] file size is %llu\n", sb.st_size);
 
   dbg_print("[DBG] inserting segment\n");
 #ifdef DEBUG
   print_seg(segp);
 #endif
 
-  struct cloudfs_seg *slotp = (struct cloudfs_seg *)
-    (Buckets[bucket_id] + (num_item) * sizeof(struct cloudfs_seg));
-  slotp->ref_count = segp->ref_count;
-  slotp->seg_size = segp->seg_size;
-  memcpy(&slotp->md5, &segp->md5, MD5_DIGEST_LENGTH);
-
-  num_item++;
-  if (lsetxattr(bucket, U_ITEM, &num_item, sizeof(int), 0) < 0) {
-    retval = cloudfs_error("ht_insert - lgetxattr");
-    return retval;
+  int success = 0;
+  for (i = 0; i < sb.st_size / sizeof(struct cloudfs_seg); i++) {
+    struct cloudfs_seg *slotp = (struct cloudfs_seg *)
+      (Buckets[bucket_id] + i * sizeof(struct cloudfs_seg));
+    if (slotp->ref_count == 0) {
+      dbg_print("[DBG] slot found: %d\n", i);
+      slotp->ref_count = segp->ref_count;
+      slotp->seg_size = segp->seg_size;
+      memcpy(slotp->md5, segp->md5, MD5_DIGEST_LENGTH);
+      msync(slotp, sizeof(struct cloudfs_seg), MS_SYNC);
+      success = 1;
+      break;
+    }
   }
 
-  msync(slotp, sizeof(struct cloudfs_seg), MS_SYNC);
+  if (!success) {
+    dbg_print("[DBG] bucket is full\n");
+    if (munmap(Buckets[bucket_id], sb.st_size) < 0) {
+      retval = cloudfs_error("ht_insert - munmap");
+      return retval;
+    }
+    retval = stretch_bucket(bucket, 0);
+    if (retval < 0) {
+      return retval;
+    }
+    retval = add_slots(bucket, 0);
+    if (retval < 0) {
+      return retval;
+    }
+    int fd = open(bucket, O_RDWR);
+    if (fd < 0) {
+      retval = cloudfs_error("ht_insert - open");
+      return retval;
+    }
+    retval = fstat(fd, &sb);
+    if (retval < 0) {
+      retval = cloudfs_error("ht_insert - fstat");
+      return retval;
+    }
+    Buckets[bucket_id] =
+      mmap(NULL, sb.st_size, PROT_WRITE, MAP_SHARED, fd, 0);
+    if (Buckets[bucket_id] == MAP_FAILED) {
+      retval = cloudfs_error("ht_insert - mmap");
+      return retval;
+    }
+    retval = close(fd);
+    if (retval < 0) {
+      retval = cloudfs_error("ht_insert - close");
+      return retval;
+    }
+    struct cloudfs_seg *slotp = (struct cloudfs_seg *)
+      (Buckets[bucket_id] + sb.st_size / 2);
+    slotp->ref_count = segp->seg_size;
+    slotp->seg_size = segp->seg_size;
+    memcpy(slotp->md5, segp->md5, MD5_DIGEST_LENGTH);
+    msync(slotp, sizeof(struct cloudfs_seg), MS_SYNC);
+  }
 
   dbg_print("[DBG] ht_insert(segp=0x%08x)=%d\n", (unsigned int) segp, retval);
 
@@ -291,9 +380,29 @@ int ht_insert(struct cloudfs_seg *segp)
 
 /**
  * @brief CloudFS should call this function upon exiting.
+ *        This function unmaps all buckets and frees allocated memory.
  * @return Void.
  */
 void ht_destroy(void) {
+  int i = 0;
+  char bucket[MAX_PATH_LEN] = "";
+
+  for (i = 0; i < Bkt_num; i++) {
+    snprintf(bucket , MAX_PATH_LEN, "%s%d", Bkt_prfx, i);
+    dbg_print("[DBG] unmapping %s\n", bucket);
+
+    struct stat sb;
+    if (lstat(bucket, &sb) < 0) {
+      cloudfs_error("ht_destroy - lstat");
+      continue;
+    }
+
+    if (munmap(Buckets[i], sb.st_size) < 0) {
+      cloudfs_error("ht_destroy - munmap");
+      continue;
+    }
+  }
+
   if (Buckets != NULL) {
     free(Buckets);
   }
