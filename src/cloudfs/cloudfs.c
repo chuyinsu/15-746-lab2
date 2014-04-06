@@ -938,7 +938,7 @@ int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
   argv[argc++] = "-s";
 
   /* run fuse in foreground */
-  argv[argc++] = "-f";
+  //argv[argc++] = "-f";
 
   State_ = *state;
 
@@ -981,26 +981,6 @@ int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
   }
 
   int fuse_stat = fuse_main(argc, argv, &Cloudfs_operations, NULL);
-
-  if (ht_init(Bkt_prfx, 11, 48, Log) < 0) {
-    printf("error\n");
-    return -1;
-  }
-  struct cloudfs_seg seg;
-  seg.ref_count = 100;
-  seg.seg_size = 1000;
-  strncpy((char *)seg.md5, "1234123412341234", MD5_DIGEST_LENGTH);
-  if (ht_insert(&seg) < 0) {
-    printf("error\n");
-    return -1;
-  }
-  struct cloudfs_seg *result = NULL;
-  if (ht_search(&seg, &result) < 0) {
-    printf("error\n");
-    return -1;
-  }
-
-  ht_destroy();
 
   return fuse_stat;
 }
