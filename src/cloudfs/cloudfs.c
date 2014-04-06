@@ -95,7 +95,6 @@ void print_stat(const struct stat *sb)
   dbg_print("      st_ctime=%lu\n", sb->st_ctime);
   dbg_print("      st_blksize=%lu\n", sb->st_blksize);
   dbg_print("      st_blocks=%llu\n", sb->st_blocks);
-  dbg_print("[DBG] --- end ---\n");
 }
 #endif
 
@@ -995,6 +994,13 @@ int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
     printf("error\n");
     return -1;
   }
+  struct cloudfs_seg *result = NULL;
+  if (ht_search(&seg, &result) < 0) {
+    printf("error\n");
+    return -1;
+  }
+
+  ht_destroy();
 
   return fuse_stat;
 }

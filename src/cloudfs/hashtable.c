@@ -41,7 +41,6 @@ void print_seg(struct cloudfs_seg *segp)
     dbg_print("%02x", segp->md5[i]);
   }
   dbg_print("\n");
-  dbg_print("[DBG] --- end ---\n");
 }
 #endif
 
@@ -76,14 +75,14 @@ static int stretch_bucket(char *bucket, int create)
     retval = cloudfs_error("stretch_bucket - fstat");
     return retval;
   }
-  dbg_print("[DBG] size of the file to stretch: %llu\n", sb.st_size);
+  dbg_print("[DBG] size of the file to stretch is %llu\n", sb.st_size);
 
   /* calculate the target size to stretch to */
   int target_size = sb.st_size * 2;
   if (target_size <= 0) {
     target_size = Bkt_size;
   }
-  dbg_print("[DBG] stretch target size: %d\n", target_size);
+  dbg_print("[DBG] stretch target size is %d\n", target_size);
 
   /* stretch the file */
   if (lseek(fd, target_size - 1, SEEK_SET) < 0) {
@@ -134,7 +133,7 @@ static int add_slots(char *bucket, int all)
     retval = cloudfs_error("add_slots - fstat");
     return retval;
   }
-  dbg_print("[DBG] size of the file to add slots: %llu\n", sb.st_size);
+  dbg_print("[DBG] size of the file to add slots is %llu\n", sb.st_size);
 
   /* starting point to fill */
   int start_size = all ? 0 : (sb.st_size / 2);
@@ -144,7 +143,7 @@ static int add_slots(char *bucket, int all)
   if (!all) {
     num_slots /= 2;
   }
-  dbg_print("[DBG] number of slots to fill: %d\n", num_slots);
+  dbg_print("[DBG] number of slots to fill is %d\n", num_slots);
 
   void *mstart = NULL;
   mstart = mmap(NULL, sb.st_size, PROT_WRITE, MAP_SHARED, fd, 0);
@@ -320,7 +319,7 @@ int ht_insert(struct cloudfs_seg *segp)
     struct cloudfs_seg *slotp = (struct cloudfs_seg *)
       (Buckets[bucket_id] + i * sizeof(struct cloudfs_seg));
     if (slotp->ref_count == 0) {
-      dbg_print("[DBG] slot found: %d\n", i);
+      dbg_print("[DBG] slot %d is available\n", i);
       slotp->ref_count = segp->ref_count;
       slotp->seg_size = segp->seg_size;
       memcpy(slotp->md5, segp->md5, MD5_DIGEST_LENGTH);
@@ -379,11 +378,58 @@ int ht_insert(struct cloudfs_seg *segp)
 }
 
 /**
+ * @brief Search for a particular segment.
+ *        Match is found if seg_size and md5 are the same.
+ * @param segp The segment to search for.
+ * @param found If found, place the match's pointer here,
+ *              If not found, this will be set to NULL.
+ * @return 0 on success, -errno otherwise.
+ */
+int ht_search(struct cloudfs_seg *segp, struct cloudfs_seg **found)
+{
+  int retval = 0;
+  int bucket_id = 0;
+  char bucket[MAX_PATH_LEN] = "";
+
+  bucket_id = hash_value(segp->md5) % Bkt_num;
+  snprintf(bucket , MAX_PATH_LEN, "%s%d", Bkt_prfx, bucket_id);
+  dbg_print("[DBG] bucket file to search is %s\n", bucket);
+
+  struct stat sb;
+  retval = lstat(bucket, &sb);
+  if (retval < 0) {
+    retval = cloudfs_error("ht_search - lstat");
+    return retval;
+  }
+
+  dbg_print("[DBG] searching segment\n");
+#ifdef DEBUG
+  print_seg(segp);
+#endif
+
+  int i = 0;
+  for (i = 0; i < sb.st_size / sizeof(struct cloudfs_seg); i++) {
+    struct cloudfs_seg *slotp = (struct cloudfs_seg *)
+      (Buckets[bucket_id] + i * sizeof(struct cloudfs_seg));
+    if ((slotp->ref_count > 0) && (slotp->seg_size == segp->seg_size)
+        && (memcmp(slotp->md5, segp->md5, MD5_DIGEST_LENGTH) == 0)) {
+      dbg_print("[DBG] segment found at slot %d\n", i);
+      *found = slotp;
+      return retval;
+    }
+  }
+  dbg_print("[DBG] segment not found\n");
+  *found = NULL;
+  return retval;
+}
+
+/**
  * @brief CloudFS should call this function upon exiting.
  *        This function unmaps all buckets and frees allocated memory.
  * @return Void.
  */
-void ht_destroy(void) {
+void ht_destroy(void)
+{
   int i = 0;
   char bucket[MAX_PATH_LEN] = "";
 
