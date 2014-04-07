@@ -1,6 +1,6 @@
 /**
  * @file cloudfs.c
- * @brief 15-746 Spring 2014 Project 2 - Hybrid Cloud Storage System
+ * @brief 15-746 Spring 2014 Project 2 - Hybrid Cloud Storage System (Part 2)
  *        Reference: Writing a FUSE Filesystem: a Tutorial
  *        (http://www.cs.nmsu.edu/~pfeiffer/fuse-tutorial)
  * @author Yinsu Chu (yinsuc)
@@ -64,6 +64,10 @@
 
 /* log file path */
 #define LOG_FILE ("/tmp/cloudfs.log")
+
+/* hash table configurations */
+#define BKT_NUM (11) /* 11 buckets */
+#define BKT_SIZE (72) /* each bucket holds 3 segments initially */
 
 /* flags used when updating file attributes */
 typedef enum {
@@ -426,33 +430,27 @@ int cloudfs_mknod(const char *path, mode_t mode, dev_t dev)
 
 /**
  * @brief Open a file.
- *        If the file is in local SSD, open it directly;
- *        Otherwise, download the file from the cloud and
- *        store it locally for access. Any changes will be
- *        synchronized when the file is closed.
+ *        If the file is on local SSD, open it directly;
+ *        otherwise, do nothing for now, only set fi->fh to 0 (invalid).
+ *        The reason is:
+ *        1) If the file is going to be read, corresponding
+ *           segments will be downloaded by cloudfs_read();
+ *        2) If the file is going to be written, according to the assumption
+ *           (only sequential writes from the very beginning to files), original
+ *           contents will be truncated and a new file will be created.
  * @param path Pathname of the file to open.
  * @param fi Information about the opened file is returned here.
- * @return 0 on success, -errno on failure.
+ * @return 0 on success, -errno otherwise.
  */
 int cloudfs_open(const char *path, struct fuse_file_info *fi)
 {
   int retval = 0;
-  char fpath[MAX_PATH_LEN] = "";
-  char tpath[MAX_PATH_LEN] = "";
-  char key[MAX_PATH_LEN] = "";
-  int fd = 0;
 
+  char fpath[MAX_PATH_LEN] = "";
   cloudfs_get_fullpath(path, fpath);
 
-  if (cloudfs_is_in_cloud(fpath)) {
-    cloudfs_get_key(fpath, key);
-    cloudfs_get_temppath(fpath, tpath);
-    Tfile = fopen(tpath, "wb");
-    cloud_get_object(BUCKET, key, get_buffer);
-    cloud_print_error();
-    fclose(Tfile);
-    fd = open(tpath, O_RDWR);
-  } else {
+  int fd = 0;
+  if (!cloudfs_is_in_cloud(fpath)) {
     fd = open(fpath, O_RDWR);
   }
 
@@ -962,10 +960,6 @@ int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
     }
   }
 
-  memset(Bkt_prfx, '\0', MAX_PATH_LEN);
-  snprintf(Bkt_prfx, MAX_PATH_LEN, "%s/%s", Temp_path, "bucket");
-  dbg_print("[DBG] Bkt_prfx=%s\n", Bkt_prfx);
-
   S3Status s3status = S3StatusOK;
   s3status = cloud_init(State_.hostname);
   if (s3status != S3StatusOK) {
@@ -977,6 +971,15 @@ int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
   if (s3status != S3StatusOK && s3status != S3StatusHttpErrorForbidden) {
     dbg_print("[ERR] failed to create bucket\n");
     cloud_print_error();
+    exit(EXIT_FAILURE);
+  }
+
+  memset(Bkt_prfx, '\0', MAX_PATH_LEN);
+  snprintf(Bkt_prfx, MAX_PATH_LEN, "%s%s", Temp_path, "/bucket");
+  dbg_print("[DBG] Bkt_prfx=%s\n", Bkt_prfx);
+
+  if (ht_init(Bkt_prfx, BKT_NUM, BKT_SIZE, Log) < 0) {
+    dbg_print("[ERR] failed to initialize hash table\n");
     exit(EXIT_FAILURE);
   }
 
