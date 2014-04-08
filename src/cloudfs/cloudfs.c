@@ -155,9 +155,21 @@ int cloudfs_upgrade_attr(struct stat *sp, char *fpath, attr_flag_t flag)
 }
 
 /**
- * @brief Get the full path to store temporary file downloaded from the cloud.
+ * @brief Get the full path of a cloud file's temporary directory/file.
+ *        Each cloud file has a directory on local SSD, where its
+ *        segments are temporarily placed here (e.g. when some part
+ *        of this file is read). However, when this file is written,
+ *        this temporary directory will be gone since only a temporary
+ *        file is needed now - their names are the same though.
+ *        For example, there is a file /mnt/fuse/big_file whose content
+ *        is in the cloud. If this file is read, some segments are downloaded
+ *        to /mnt/fuse/.tmp/+mnt+fuse+big_file/seg1, seg2..., here,
+ *        +mnt+fuse+big_file is the temporary directory; once the file is
+ *        being written, all of its original content is truncated, so
+ *        we only need a temporary file instead a folder to store the new
+ *        content.
  * @param fpath The full path of the proxy file.
- * @param tpath The generated pathname of the temporary file on SSD.
+ * @param tpath The generated path of the temporary directory/file on SSD.
  * @return Void.
  */
 void cloudfs_get_temppath(const char *fpath, char *tpath)
@@ -171,12 +183,12 @@ void cloudfs_get_temppath(const char *fpath, char *tpath)
 }
 
 /**
- * @brief Convert full path on SSD to key for the cloud storage.
- *        This key also serves as the temporary file name when the
- *        file is downloaded from the cloud to SSD.
+ * @brief Convert full path on SSD to temporary directory/file name on SSD.
  *        Simple strategy: use the full path, replace all illegal characters.
+ *        This function got its name in Part 1, but now it does not generate
+ *        keys for the cloud storage.
  * @param fpath Pathname of the file.
- * @param key The key for the file to store in the cloud. It should have
+ * @param key The corresponding temporary directory/file on SSD. It should have
  *            at least MAX_PATH_LEN byte space.
  * @return Void.
  */
@@ -530,15 +542,33 @@ int cloudfs_write(const char *path, const char *buf, size_t size, off_t offset,
 }
 
 /**
+ * @brief Recursively remove a directory.
+ *        This directory along with everything inside it are removed.
+ * @param path Pathname of the directory.
+ * @return 0 on success, -errno otherwise.
+ */
+int cloudfs_rmdir_rec(char *path)
+{
+  char command[MAX_PATH_LEN] = "";
+  snprintf(command, MAX_PATH_LEN, "%s%s", "rm -rf ", path);
+  dbg_print("[DBG] remove directory, the command is %s\n", command);
+  retval = system(command);
+  if (retval < 0) {
+    retval = cloudfs_error("cloudfs_release");
+    return retval;
+  }
+}
+
+/**
  * @brief Release an opened file.
  *        For files stored on SSD:
  *          - If its size does not exceed the threshold, just close it;
  *          - If its size has exceeded the threshold, move it to the cloud;
  *        For files stored in the cloud:
- *          - If its dirty attribute is not set, just delete the temporary file.
- *          - If its dirty attribute is set:
+ *          - If fi->fh == 0, just delete the temporary segments;
+ *          - If fi->fh > 0:
  *            1) If its size shrinks below the threshold, move it back to SSD;
- *            2) Otherwise, upload the new version to the cloud;
+ *            2) Otherwise, replace the new version to the cloud;
  * @param path Pathname of the file to release.
  * @param fi The information about the opened file.
  * @return 0 on success, -errno otherwise.
@@ -546,44 +576,44 @@ int cloudfs_write(const char *path, const char *buf, size_t size, off_t offset,
 int cloudfs_release(const char *path, struct fuse_file_info *fi)
 {
   int retval = 0;
+
+  /* full path of the file: either a small file on SSD or a proxy file */
   char fpath[MAX_PATH_LEN] = "";
-  char tpath[MAX_PATH_LEN] = "";
-  char key[MAX_PATH_LEN] = "";
-  struct stat sb;
-
-  retval = close(fi->fh);
-  if (retval < 0) {
-    retval = cloudfs_error("cloudfs_release");
-    return retval;
-  }
-
   cloudfs_get_fullpath(path, fpath);
+
+  /* temporary directory/file of the file */
+  char tpath[MAX_PATH_LEN] = "";
   cloudfs_get_temppath(fpath, tpath);
-  cloudfs_get_key(fpath, key);
 
   if (cloudfs_is_in_cloud(fpath)) {
     /* cloud file */
 
-    /* read the latest attributes from the temporary file */
-    retval = lstat(tpath, &sb);
-    if (retval < 0) {
-      retval = cloudfs_error("cloudfs_release");
-      return retval;
-    }
-
-    /* read dirty attribute */
-    int dirty = 0;
-    retval = lgetxattr(fpath, U_DIRTY, &dirty, sizeof(int));
-    if (retval < 0) {
-      retval = cloudfs_error("cloudfs_release");
-      return retval;
-    }
-
-    if (dirty) {
+    if (fi->fh > 0) {
       /* file content changed */
+
+      /* close the temporary file */
+      retval = close(fi->fh);
+      if (retval < 0) {
+        retval = cloudfs_error("cloudfs_release");
+        return retval;
+      }
+
+      /* According to the assumption in the handout,
+       * this file should has been truncated to zero and then
+       * sequentially written from the beginning. */
+
+      /* read the latest attributes from the temporary file */
+      retval = lstat(tpath, &sb);
+      if (retval < 0) {
+        retval = cloudfs_error("cloudfs_release");
+        return retval;
+      }
 
       if (sb.st_size < State_.threshold) {
         /* move back to SSD */
+
+        /* delete the file in the cloud */
+        dedup_remove(fpath);
 
         /* delete the proxy file */
         retval = remove(fpath);
@@ -605,21 +635,11 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
         lsetxattr(fpath, U_REMOTE, &remote_attr, sizeof(int), 0);
         lsetxattr(fpath, U_DIRTY, &dirty_attr, sizeof(int), 0);
 
-        /* delete the file in the cloud */
-        cloud_delete_object(BUCKET, key);
-        cloud_print_error();
       } else {
-        /* synchronize to the cloud */
+        /* file size still exceeds threshold */
 
-        /* delete the file in the cloud */
-        cloud_delete_object(BUCKET, key);
-        cloud_print_error();
-
-        /* upload the new version */
-        Cfile = fopen(tpath, "rb");
-        cloud_put_object(BUCKET, key, sb.st_size, put_buffer);
-        cloud_print_error();
-        fclose(Cfile);
+        /* replace the old version in the cloud */
+        dedup_replace(tpath, fpath);
 
         /* update attributes */
         cloudfs_upgrade_attr(&sb, fpath, UPDATE);
@@ -634,15 +654,22 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
     } else {
       /* file content not changed */
 
-      /* remove the temporary file on SSD */
-      retval = remove(tpath);
+      /* delete the temporary directory along with all segments in it on SSD */
+      retval = cloudfs_rmdir_rec(tpath);
       if (retval < 0) {
-        retval = cloudfs_error("cloudfs_release");
         return retval;
       }
+
     }
   } else {
     /* local file */
+
+    /* close the file */
+    retval = close(fi->fh);
+    if (retval < 0) {
+      retval = cloudfs_error("cloudfs_release");
+      return retval;
+    }
 
     /* read the latest file attributes */
     retval = lstat(fpath, &sb);
@@ -655,14 +682,7 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
       /* move to the cloud */
 
       /* upload */
-      Cfile = fopen(fpath, "rb");
-      cloud_put_object(BUCKET, key, sb.st_size, put_buffer);
-      cloud_print_error();
-      fclose(Cfile);
-
-      /* clear the file content */
-      FILE *fp = fopen(fpath, "wb");
-      fclose(fp);
+      dedup_upload(fpath);
 
       /* update attributes */
       cloudfs_upgrade_attr(&sb, fpath, CREATE);
@@ -949,13 +969,13 @@ int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
   Log = fopen(LOG_FILE, "wb");
   setvbuf(Log, NULL, _IOLBF, 0);
 
-  /* initialize temporary directory */
+  /* initialize .tmp directory */
   memset(Temp_path, '\0', MAX_PATH_LEN);
   snprintf(Temp_path, MAX_PATH_LEN, "%s%s", State_.ssd_path, TEMP_PATH);
   dbg_print("[DBG] Temp_path=%s\n", Temp_path);
   if (mkdir(Temp_path, DEFAULT_MODE) < 0) {
     if (errno != EEXIST) {
-      dbg_print("[ERR] failed to create temporary directory\n");
+      dbg_print("[ERR] failed to create .tmp directory\n");
       exit(EXIT_FAILURE);
     }
   }
