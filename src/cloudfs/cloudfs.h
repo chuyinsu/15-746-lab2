@@ -20,6 +20,14 @@ struct cloudfs_state {
   char no_compress;
 };
 
+/* structure of the key for deduplication hash table,
+ * represents a segment of a file */
+struct cloudfs_seg {
+  int ref_count;
+  int seg_size;
+  unsigned char md5[MD5_DIGEST_LENGTH];
+};
+
 int cloudfs_start(struct cloudfs_state* state,
     const char* fuse_runtime_name);  
 void cloudfs_get_fullpath(const char *path, char *fullpath);
@@ -33,14 +41,6 @@ int cloudfs_error(char *error_str);
 #else
 # define dbg_print(...) 
 #endif
-
-/* structure of the key for deduplication hash table,
- * represents a segment of a file */
-struct cloudfs_seg {
-  int ref_count;
-  int seg_size;
-  unsigned char md5[MD5_DIGEST_LENGTH];
-};
 
 #define DEFAULT_MODE (0777)
 

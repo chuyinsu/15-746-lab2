@@ -29,6 +29,7 @@
 #include "dedup.h"
 
 #include "hashtable.h"
+#include "dedup_layer.h"
 
 #define UNUSED __attribute__((unused))
 
@@ -449,7 +450,7 @@ int cloudfs_mknod(const char *path, mode_t mode, dev_t dev)
  *           segments will be downloaded by cloudfs_read();
  *        2) If the file is going to be written, according to the assumption
  *           (only sequential writes from the very beginning to files), original
- *           contents will be truncated and a new file will be created.
+ *           contents will be truncated and new content will be added.
  * @param path Pathname of the file to open.
  * @param fi Information about the opened file is returned here.
  * @return 0 on success, -errno otherwise.
@@ -488,14 +489,144 @@ int cloudfs_open(const char *path, struct fuse_file_info *fi)
  * @param fi The information about the opened file.
  * @return Number of bytes read on success, -errno otherwise.
  */
-int cloudfs_read(const char *path UNUSED, char *buf, size_t size, off_t offset,
+int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
     struct fuse_file_info *fi)
 {
   int retval = 0;
 
-  retval = pread(fi->fh, buf, size, offset);
-  if (retval < 0) {
-    retval = cloudfs_error("cloudfs_read");
+  char fpath[MAX_PATH_LEN] = "";
+  cloudfs_get_fullpath(path, fpath);
+
+  char tpath[MAX_PATH_LEN] = "";
+  cloudfs_get_temppath(fpath, tpath);
+
+  dbg_print("[DBG] reading interval [%llu, %llu] of the file\n",
+      offset, offset + size - 1);
+
+  if (cloudfs_is_in_cloud(fpath)) {
+    /* cloud file */
+
+    if (fi->fh > 0) {
+      /* file is dirty */
+      dbg_print("[DBG] file is dirty, read from the new version\n");
+
+      retval = pread(fi->fh, buf, size, offset);
+      if (retval < 0) {
+        retval = cloudfs_error("cloudfs_read");
+      }
+    } else {
+      /* file is not dirty, fetch needed segments from the cloud */
+      dbg_print("[DBG] file is not dirty\n");
+
+      /* these are parameters required by the getline() function */
+      char *seg_md5 = NULL;
+      size_t len = 0;
+      FILE *proxy_fp = fopen(fpath, "r");
+      if (proxy_fp == NULL) {
+        retval = cloudfs_error("cloudfs_read");
+      }
+
+      /* keep track of the file position */
+      int seg_start_pos = -1;
+      int seg_end_pos = 0;
+
+      /* calculate the span of the current segment that we need */
+      int seg_local_offset = 0;
+      int seg_local_size = 0;
+
+      /* keep track of how many data has been read */
+      int filled = 0;
+
+      dbg_print("[DBG] {} - current segment, [] target portion\n");
+
+      /* iterate through all the segments */
+      while ((retval = getline(&seg_md5, &len, proxy_fp)) != -1) {
+
+        /* build the segment structure */
+        struct cloudfs_seg seg;
+        seg.ref_count = 0;
+        seg.seg_size = (int) strtol(seg_md5 + MD5_DIGEST_LENGTH + 1, NULL, 10);
+        memcpy(seg.md5, seg_md5, MD5_DIGEST_LENGTH);
+        if (seg_md5 != NULL) {
+          free(seg_md5);
+        }
+        dbg_print("[DBG] next segment from proxy file\n");
+#ifdef DEBUG
+        print_seg(&seg);
+#endif
+
+        /* the span of the current segment in the entire file */
+        seg_start_pos = seg_end_pos + 1;
+        seg_end_pos = seg_start_pos + seg.seg_size - 1;
+        dbg_print("[DBG] this segment holds interval {%d, %d} of the file\n",
+            seg_start_pos, seg_end_pos);
+
+        /* the portion that we want is interval [offset, offset + size - 1],
+         * there are several cases regarding the intersection of this interval
+         * and the current segment */
+
+        if (seg_end_pos < offset) {
+          dbg_print("[DBG] {%d   %d} [%llu   %llu]\n",
+              seg_start_pos, seg_end_pos, offset, offset + size - 1);
+          continue;
+        } else if (seg_start_pos < offset
+            && seg_end_pos >= offset
+            && seg_end_pos <= offset + size - 1) {
+          dbg_print("[DBG] {%d   [%llu   %d}   %llu]\n",
+              seg_start_pos, offset, seg_end_pos, offset + size - 1);
+          seg_local_offset = offset - seg_start_pos;
+          seg_local_size = seg_end_pos - offset + 1;
+        } else if (seg_start_pos >= offset
+            && seg_start_pos <= offset + size - 1
+            && seg_end_pos >= offset
+            && seg_end_pos <= offset + size - 1) {
+          dbg_print("[DBG] [%llu   {%d   %d}   %llu]\n",
+              offset, seg_start_pos, seg_end_pos, offset + size - 1);
+          seg_local_offset = 0;
+          seg_local_size = seg.seg_size;
+        } else if (seg_start_pos < offset
+            && seg_end_pos > offset + size - 1) {
+          dbg_print("[DBG] {%d   [%llu   %llu]   %d}\n",
+              seg_start_pos, offset, offset + size - 1, seg_end_pos);
+          seg_local_offset = offset - seg_start_pos;
+          seg_local_size = size;
+        } else if (seg_start_pos > offset
+            && seg_start_pos <= offset + size - 1
+            && seg_end_pos > offset + size - 1) {
+          dbg_print("[DBG] [%llu   {%d   %llu]   %d}\n",
+              offset, seg_start_pos, offset + size - 1, seg_end_pos);
+          seg_local_offset = 0;
+          seg_local_size = offset + size - seg_start_pos;
+        } else if (seg_start_pos > offset + size - 1) {
+          dbg_print("[DBG] [%llu   %llu] {%d   %d}\n",
+              offset, offset + size - 1, seg_start_pos, seg_end_pos);
+          continue;
+        }
+
+        char seg_buf[seg_local_size];
+        retval = dedup_layer_read_seg(tpath, &seg, seg_buf, seg_local_size,
+            seg_local_offset);
+        if (retval < 0) {
+          return retval;
+        }
+
+        memcpy(buf + filled, seg_buf, seg_local_size);
+        filled += seg_local_size;
+
+      } /* end of while */
+
+      retval = fclose(proxy_fp);
+      if (retval == EOF) {
+        retval = cloudfs_error("cloudfs_read");
+      }
+    }
+  } else {
+    /* local file */
+
+    retval = pread(fi->fh, buf, size, offset);
+    if (retval < 0) {
+      retval = cloudfs_error("cloudfs_read");
+    }
   }
 
   dbg_print("[DBG] cloudfs_read(path=\"%s\", buf=\"%s\", size=%d, offset=%llu,"
@@ -549,6 +680,7 @@ int cloudfs_write(const char *path, const char *buf, size_t size, off_t offset,
  */
 int cloudfs_rmdir_rec(char *path)
 {
+  int retval = 0;
   char command[MAX_PATH_LEN] = "";
   snprintf(command, MAX_PATH_LEN, "%s%s", "rm -rf ", path);
   dbg_print("[DBG] remove directory, the command is %s\n", command);
@@ -557,6 +689,7 @@ int cloudfs_rmdir_rec(char *path)
     retval = cloudfs_error("cloudfs_release");
     return retval;
   }
+  return retval;
 }
 
 /**
@@ -576,6 +709,7 @@ int cloudfs_rmdir_rec(char *path)
 int cloudfs_release(const char *path, struct fuse_file_info *fi)
 {
   int retval = 0;
+  struct stat sb;
 
   /* full path of the file: either a small file on SSD or a proxy file */
   char fpath[MAX_PATH_LEN] = "";
@@ -590,6 +724,7 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
 
     if (fi->fh > 0) {
       /* file content changed */
+      dbg_print("[DBG] file is dirty\n");
 
       /* close the temporary file */
       retval = close(fi->fh);
@@ -597,6 +732,7 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
         retval = cloudfs_error("cloudfs_release");
         return retval;
       }
+      dbg_print("[DBG] temporary file closed\n");
 
       /* According to the assumption in the handout,
        * this file should has been truncated to zero and then
@@ -608,17 +744,18 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
         retval = cloudfs_error("cloudfs_release");
         return retval;
       }
+      dbg_print("[DBG] attributes read from temporary file\n");
+#ifdef DEBUG
+      print_stat(&sb);
+#endif
 
       if (sb.st_size < State_.threshold) {
         /* move back to SSD */
+        dbg_print("[DBG] file size shrinked below threshold\n");
 
         /* delete the file in the cloud */
-        dedup_remove(fpath);
-
-        /* delete the proxy file */
-        retval = remove(fpath);
+        retval = dedup_layer_remove(fpath);
         if (retval < 0) {
-          retval = cloudfs_error("cloudfs_release");
           return retval;
         }
 
@@ -628,18 +765,22 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
           retval = cloudfs_error("cloudfs_release");
           return retval;
         }
+        dbg_print("[DBG] temporary file %s renamed to %s\n", tpath, fpath);
 
         /* update attributes */
         int remote_attr = 0;
         int dirty_attr = 0;
         lsetxattr(fpath, U_REMOTE, &remote_attr, sizeof(int), 0);
         lsetxattr(fpath, U_DIRTY, &dirty_attr, sizeof(int), 0);
-
       } else {
         /* file size still exceeds threshold */
+        dbg_print("[DBG] file size exceeds threshold\n");
 
         /* replace the old version in the cloud */
-        dedup_replace(tpath, fpath);
+        retval = dedup_layer_replace(tpath, fpath);
+        if (retval < 0) {
+          return retval;
+        }
 
         /* update attributes */
         cloudfs_upgrade_attr(&sb, fpath, UPDATE);
@@ -653,13 +794,14 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
       }
     } else {
       /* file content not changed */
+      dbg_print("[DBG] file is not dirty\n");
 
       /* delete the temporary directory along with all segments in it on SSD */
       retval = cloudfs_rmdir_rec(tpath);
       if (retval < 0) {
         return retval;
       }
-
+      dbg_print("[DBG] temporary directory %s removed\n", tpath);
     }
   } else {
     /* local file */
@@ -670,6 +812,7 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
       retval = cloudfs_error("cloudfs_release");
       return retval;
     }
+    dbg_print("[DBG] local file closed\n");
 
     /* read the latest file attributes */
     retval = lstat(fpath, &sb);
@@ -677,12 +820,20 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
       retval = cloudfs_error("cloudfs_release");
       return retval;
     }
+    dbg_print("[DBG] attributes read from local file\n");
+#ifdef DEBUG
+    print_stat(&sb);
+#endif
 
     if (sb.st_size > State_.threshold) {
       /* move to the cloud */
+      dbg_print("[DBG] file size exceeds threshold\n");
 
       /* upload */
-      dedup_upload(fpath);
+      retval = dedup_layer_upload(fpath);
+      if (retval < 0) {
+        return retval;
+      }
 
       /* update attributes */
       cloudfs_upgrade_attr(&sb, fpath, CREATE);
