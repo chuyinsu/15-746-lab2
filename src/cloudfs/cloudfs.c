@@ -1030,19 +1030,16 @@ int cloudfs_unlink(const char *path)
 {
   int retval = 0;
   char fpath[MAX_PATH_LEN] = "";
-  char key[MAX_PATH_LEN] = "";
 
   cloudfs_get_fullpath(path, fpath);
 
   if (cloudfs_is_in_cloud(fpath)) {
-    cloudfs_get_key(fpath, key);
-    cloud_delete_object(BUCKET, key);
-    cloud_print_error();
-  }
-
-  retval = unlink(fpath);
-  if (retval < 0) {
-    retval = cloudfs_error("cloudfs_unlink");
+    retval = dedup_layer_remove(fpath);
+  } else {
+    retval = unlink(fpath);
+    if (retval < 0) {
+      retval = cloudfs_error("cloudfs_unlink");
+    }
   }
 
   dbg_print("[DBG] cloudfs_unlink(path=\"%s\")=%d\n", path, retval);
