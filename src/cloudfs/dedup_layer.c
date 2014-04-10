@@ -13,6 +13,8 @@
 #include "hashtable.h"
 #include "dedup.h"
 
+#define BUF_LEN (1024)
+
 extern FILE *Log;
 static rabinpoly_t *rp;
 
@@ -29,6 +31,119 @@ static int put_buffer(char *buf, int len) {
 }
 
 /**
+ * @brief A helper function to dedup_layer_segmentation.
+ *        It allocates memory for newly found segments.
+ * @param num_seg Number of segments is updated here.
+ * @param segs Segments are updated here.
+ * @param segment_len The length of the new segment.
+ * @return 0 on success, -errno otherwise.
+ */
+static int dedup_layer_update_segments(int *num_seg, struct cloudfs_seg **segs,
+    int segment_len, unsigned char *md5)
+{
+  int retval = 0;
+  dbg_print("[DBG] new segment found\n");
+
+  int old_size = (*num_seg) * sizeof(struct cloudfs_seg);
+  dbg_print("[DBG] old size is %d * %d = %d\n",
+      *num_seg, sizeof(struct cloudfs_seg), old_size);
+
+  (*num_seg)++;
+  int new_size = (*num_seg) * sizeof(struct cloudfs_seg);
+  dbg_print("[DBG] new size is %d * %d = %d\n",
+      *num_seg, sizeof(struct cloudfs_seg), new_size);
+
+  (*segs) = (struct cloudfs_seg *) realloc((*segs), new_size);
+  if (*segs == NULL) {
+    retval = cloudfs_error("dedup_layer_update_segments");
+    return retval;
+  }
+
+  struct cloudfs_seg *new_seg = (*segs) + old_size;
+  new_seg->ref_count = 0;
+  new_seg->seg_size = segment_len;
+  memcpy(new_seg->md5, md5, MD5_DIGEST_LENGTH);
+
+#ifdef DEBUG
+  print_seg(new_seg);
+#endif
+
+  return retval;
+}
+
+/**
+ * @brief Cut a file into segments.
+ *        Reference: dedup-lib/rabin-example.c in the provided code.
+ * @param fpath Pathname of the file. It should have MAX_PATH_LEN bytes.
+ * @param num_seg Return the number of segments here.
+ * @param segs Return the array of segments here. It must be freed
+ *             by the caller of this function.
+ * @return 0 on success, -1 otherwise.
+ */
+static int dedup_layer_segmentation(char *fpath, int *num_seg,
+    struct cloudfs_seg **segs)
+{
+  int retval = 0;
+
+  int fd = open(fpath, O_RDONLY);
+  if (fd < 0) {
+    retval = cloudfs_error("dedup_layer_segmentation");
+    return retval;
+  }
+  dbg_print("[DBG] segmenting file %s\n", fpath);
+
+  MD5_CTX ctx;
+  unsigned char md5[MD5_DIGEST_LENGTH] = "";
+  int new_segment = 0;
+  int len = 0;
+  int segment_len = 0;
+  char buf[BUF_LEN] = "";
+  int bytes = 0;
+
+  MD5_Init(&ctx);
+  while ((bytes = read(fd, buf, BUF_LEN)) > 0) {
+    char *buftoread = (char *) buf;
+    while ((len = rabin_segment_next(rp, buftoread, bytes,
+            &new_segment)) > 0) {
+
+      MD5_Update(&ctx, buftoread, len);
+      segment_len += len;
+
+      if (new_segment) {
+        MD5_Final(md5, &ctx);
+
+        retval = dedup_layer_update_segments(num_seg, segs, segment_len, md5);
+        if (retval < 0) {
+          return retval;
+        }
+
+        MD5_Init(&ctx);
+        segment_len = 0;
+      }
+
+      buftoread += len;
+      bytes -= len;
+
+      if (bytes <= 0) {
+        break;
+      }
+    }
+    if (len == -1) {
+      dbg_print("[ERR] failed to process the segment\n");
+      return -1;
+    }
+  }
+  MD5_Final(md5, &ctx);
+
+  retval = dedup_layer_update_segments(num_seg, segs, segment_len, md5);
+  if (retval < 0) {
+    return retval;
+  }
+
+  return retval;
+}
+
+/**
  * @brief Initialize the dedup layer.
  * @param Parameters required to initialize Rabin Fingerprinting library.
  * @return 0 on success, -1 otherwise.
@@ -42,6 +157,15 @@ int dedup_layer_init(int window_size, int avg_seg_size, int min_seg_size,
   } else {
     return 0;
   }
+}
+
+/**
+ * @brief This function should be called when CloudFS exits.
+ * @return Void.
+ */
+void dedup_layer_destroy(void)
+{
+  rabin_free(&rp);
 }
 
 /**

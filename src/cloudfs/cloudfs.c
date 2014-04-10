@@ -1036,6 +1036,7 @@ void cloudfs_destroy(void *data UNUSED) {
   cloud_destroy();
   if (!State_.no_dedup) {
     ht_destroy();
+    dedup_layer_destroy();
   }
   dbg_print("[DBG] cloudfs_destroy()\n");
 }
