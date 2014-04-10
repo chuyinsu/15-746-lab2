@@ -478,12 +478,23 @@ int dedup_layer_replace(char *new_version, char *fpath)
       }
     }
   }
+  fclose(proxy_fp);
 
   /* at this point, all old segments are processed - either deleted or
    * remained (because the new version also has it) */
 
+  proxy_fp = fopen(fpath, "wb");
+  if (proxy_fp == NULL) {
+    retval = cloudfs_error("dedup_layer_replace");
+    return retval;
+  }
+  int j = 0;
   long offset = 0;
   for (i = 0; i < num_new_seg; i++) {
+    for (j = 0; j < MD5_DIGEST_LENGTH; j++) {
+      fprintf(proxy_fp, "%c", new_version_segs[i].md5[j]);
+    }
+    fprintf(proxy_fp, "-%ld\n", new_version_segs[i].seg_size);
     if (new_version_segs[i].ref_count == 0) {
       new_version_segs[i].ref_count = 1;
       retval = dedup_layer_add_seg(&(new_version_segs[i]), new_version, offset);
@@ -493,6 +504,8 @@ int dedup_layer_replace(char *new_version, char *fpath)
     }
     offset += new_version_segs[i].seg_size;
   }
+
+  fclose(proxy_fp);
 
   free(new_version_segs);
 
@@ -512,7 +525,48 @@ int dedup_layer_replace(char *new_version, char *fpath)
  */
 int dedup_layer_upload(char *fpath)
 {
-  (void) fpath;
-  return 0;
+  int retval = 0;
+
+  /* segment the file */
+  int num_seg = 0;
+  struct cloudfs_seg *segs = NULL;
+
+  retval = dedup_layer_segmentation(fpath, &num_seg, &segs);
+  dbg_print("[DBG] file %s segmented\n", fpath);
+
+  /* create a temporary proxy file to record the segments */
+  char proxy_tmp[MAX_PATH_LEN] = "";
+  snprintf(proxy_tmp, MAX_PATH_LEN, "%s.tmp", fpath);
+
+  FILE *proxy_fp = fopen(proxy_tmp, "wb");
+  if (proxy_fp == NULL) {
+    retval = cloudfs_error("dedup_layer_upload");
+    return retval;
+  }
+  int i = 0;
+  int j = 0;
+  long offset = 0;
+  for (i = 0; i < num_seg; i++) {
+    for (j = 0; j < MD5_DIGEST_LENGTH; j++) {
+      fprintf(proxy_fp, "%c", segs[i].md5[j]);
+    }
+    fprintf(proxy_fp, "-%ld\n", segs[i].seg_size);
+    segs[i].ref_count = 1;
+    retval = dedup_layer_add_seg(&(segs[i]), fpath, offset);
+    if (retval < 0) {
+      return retval;
+    }
+    offset += segs[i].seg_size;
+  }
+  fclose(proxy_fp);
+  free(segs);
+
+  /* delete the original file */
+  unlink(fpath);
+
+  /* rename the proxy file to the original file's name */
+  rename(proxy_tmp, fpath);
+
+  return retval;
 }
 
