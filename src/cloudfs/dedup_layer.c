@@ -186,7 +186,7 @@ void dedup_layer_destroy(void)
  * @return 0 on success, -errno otherwise.
  */
 int dedup_layer_read_seg(char *cache_dir, struct cloudfs_seg *segp, char *buf,
-    int size, int offset)
+    int size, long offset)
 {
   int retval = 0;
   DIR *dir = NULL;
@@ -242,8 +242,106 @@ int dedup_layer_read_seg(char *cache_dir, struct cloudfs_seg *segp, char *buf,
   }
 
   dbg_print("[DBG] dedup_layer_read_seg(cache_dir=\"%s\","
-      " segp=0x%08x, buf=0x%08x, size=%d, offset=%d)=%d\n",
+      " segp=0x%08x, buf=0x%08x, size=%d, offset=%ld)=%d\n",
       cache_dir, (unsigned int) segp, (unsigned int) buf, size, offset, retval);
+
+  return retval;
+}
+
+/**
+ * @brief Add a segment to the cloud.
+ *        If the segment is found in hash table, increase ref_count by 1;
+ *        Otherwise, upload to cloud and insert into hash table.
+ * @param segp The segment to add.
+ * @param fpath Pathname of the file. It should have MAX_PATH_LEN bytes.
+ * @param offset Offset of the segment in the file.
+ * @return 0 on success, -errno otherwise.
+ */
+static int dedup_layer_add_seg(struct cloudfs_seg *segp, char *fpath,
+    long offset)
+{
+  int retval = 0;
+
+  dbg_print("[DBG] adding segment offset %ld in file %s\n", offset, fpath);
+#ifdef DEBUG
+  print_seg(segp);
+#endif
+
+  struct cloudfs_seg *found = NULL;
+  retval = ht_search(segp, &found);
+  if (retval < 0) {
+    return retval;
+  }
+
+  if (found != NULL) {
+    dbg_print("[DBG] segment to add found in hash table\n");
+#ifdef DEBUG
+    print_seg(found);
+#endif
+    (found->ref_count)++;
+    ht_sync(found);
+  } else {
+    dbg_print("[DBG] segment to add not found in hash table\n");
+
+    char key[MD5_DIGEST_LENGTH + 1] = "";
+    memcpy(key, segp->md5, MD5_DIGEST_LENGTH);
+    dbg_print("[DBG] cloud key is %s\n", key);
+
+    /* upload the segment */
+    Cfile = fopen(fpath, "rb");
+    fseek(Cfile, offset, SEEK_SET);
+    cloud_put_object(BUCKET, key, segp->seg_size, put_buffer);
+    cloud_print_error();
+    fclose(Cfile);
+    dbg_print("[DBG] uploaded to the cloud\n");
+
+    retval = ht_insert(segp);
+    if (retval < 0) {
+      return retval;
+    }
+  }
+
+  return retval;
+}
+
+/**
+ * @brief Remove a segment from the cloud.
+ *        If not found in hash table, return;
+ *        If found in hash table:
+ *          1) If ref_count > 1, only decrease its ref_count by 1;
+ *          2) Otherwise, delete from cloud.
+ * @param segp The segment to remove.
+ * @return 0 on success, -errno otherwise.
+ */
+static int dedup_layer_remove_seg(struct cloudfs_seg *segp)
+{
+  int retval = 0;
+
+  struct cloudfs_seg *found = NULL;
+  retval = ht_search(segp, &found);
+  if (retval < 0) {
+    return retval;
+  }
+
+  if (found != NULL) {
+    dbg_print("[DBG] segment to remove found in hash table\n");
+#ifdef DEBUG
+    print_seg(found);
+#endif
+    (found->ref_count)--;
+    ht_sync(found);
+    if (found->ref_count == 0) {
+      char key[MD5_DIGEST_LENGTH + 1] = "";
+      memcpy(key, segp->md5, MD5_DIGEST_LENGTH);
+      cloud_delete_object(BUCKET, key);
+      cloud_print_error();
+    }
+  } else {
+    dbg_print("[DBG] segment to remove not found in hash table\n");
+  }
+
+  dbg_print("[DBG] dedup_layer_remove_seg(segp=0x%08x)=%d\n",
+      (unsigned int) segp, retval);
 
   return retval;
 }
@@ -285,27 +383,9 @@ int dedup_layer_remove(char *fpath)
     print_seg(&seg);
 #endif
 
-    struct cloudfs_seg *found = NULL;
-    retval = ht_search(&seg, &found);
+    retval = dedup_layer_remove_seg(&seg);
     if (retval < 0) {
       return retval;
-    }
-    dbg_print("[DBG] segment in hash table\n");
-#ifdef DEBUG
-    print_seg(found);
-#endif
-    (found->ref_count)--;
-    ht_sync(found);
-    if (found->ref_count < 0) {
-      dbg_print("[ERR] reference counter less than 0\n");
-      retval = -EINVAL;
-      return retval;
-    }
-    if (found->ref_count == 0) {
-      char key[MD5_DIGEST_LENGTH + 1] = "";
-      memcpy(key, seg_md5, MD5_DIGEST_LENGTH);
-      cloud_delete_object(BUCKET, key);
-      cloud_print_error();
     }
   }
 
@@ -341,9 +421,85 @@ int dedup_layer_remove(char *fpath)
  */
 int dedup_layer_replace(char *new_version, char *fpath)
 {
-  (void) new_version;
-  (void) fpath;
-  return 0;
+  int retval = 0;
+  int i = 0;
+
+  /* segment the new version */
+  int num_new_seg = 0;
+  struct cloudfs_seg *new_version_segs = NULL;
+  retval = dedup_layer_segmentation(new_version, &num_new_seg,
+      &new_version_segs);
+  dbg_print("[DBG] new version %s segmented\n", new_version);
+
+  /* these are parameters required by the getline() function */
+  char *seg_md5 = NULL;
+  size_t len = 0;
+  FILE *proxy_fp = fopen(fpath, "rb");
+  if (proxy_fp == NULL) {
+    retval = cloudfs_error("dedup_layer_replace");
+    return retval;
+  }
+
+  /* iterate through all the old segments */
+  while ((retval = getline(&seg_md5, &len, proxy_fp)) != -1) {
+    /* build the segment structure */
+    struct cloudfs_seg old_seg;
+    old_seg.ref_count = 0;
+    old_seg.seg_size = (int) strtol(seg_md5 + MD5_DIGEST_LENGTH + 1, NULL, 10);
+    memcpy(old_seg.md5, seg_md5, MD5_DIGEST_LENGTH);
+    if (seg_md5 != NULL) {
+      free(seg_md5);
+    }
+    dbg_print("[DBG] next segment from proxy file\n");
+#ifdef DEBUG
+    print_seg(&old_seg);
+#endif
+
+    /* search in the new segments for this old segment,
+     * if there is a match, no need to delete this old segment */
+
+    /* each new segment can only be matched once, set ref_count to 1
+     * to denote the match */
+
+    int match = 0;
+    for (i = 0; i < num_new_seg; i++) {
+      if ((memcmp(new_version_segs[i].md5, seg_md5, MD5_DIGEST_LENGTH) == 0)
+          && (new_version_segs[i].ref_count == 0)) {
+        match = 1;
+        new_version_segs[i].ref_count = 1;
+        break;
+      }
+    }
+
+    if (!match) {
+      retval = dedup_layer_remove_seg(&old_seg);
+      if (retval < 0) {
+        return retval;
+      }
+    }
+  }
+
+  /* at this point, all old segments are processed - either deleted or
+   * remained (because the new version also has it) */
+
+  long offset = 0;
+  for (i = 0; i < num_new_seg; i++) {
+    if (new_version_segs[i].ref_count == 0) {
+      new_version_segs[i].ref_count = 1;
+      retval = dedup_layer_add_seg(&(new_version_segs[i]), new_version, offset);
+      if (retval < 0) {
+        return retval;
+      }
+    }
+    offset += new_version_segs[i].seg_size;
+  }
+
+  free(new_version_segs);
+
+  dbg_print("[DBG] dedup_layer_replace(new_version=\"%s\", fpath=\"%s\")=%d\n",
+      new_version, fpath, retval);
+
+  return retval;
 }
 
 /**

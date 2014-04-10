@@ -36,7 +36,7 @@ void print_seg(struct cloudfs_seg *segp)
   int i = 0;
   dbg_print("[DBG] print segment 0x%08x\n", (unsigned int) segp);
   dbg_print("      ref_count=%d\n", segp->ref_count);
-  dbg_print("      seg_size=%d\n", segp->seg_size);
+  dbg_print("      seg_size=%ld\n", segp->seg_size);
   dbg_print("      md5=");
   for (i = 0; i < MD5_DIGEST_LENGTH; i++) {
     dbg_print("%02x", segp->md5[i]);

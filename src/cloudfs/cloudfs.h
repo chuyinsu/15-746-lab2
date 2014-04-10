@@ -24,7 +24,7 @@ struct cloudfs_state {
  * represents a segment of a file */
 struct cloudfs_seg {
   int ref_count;
-  int seg_size;
+  long seg_size;
   unsigned char md5[MD5_DIGEST_LENGTH];
 };
 
