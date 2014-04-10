@@ -60,9 +60,6 @@
 /* temporary path to store downloaded files from the cloud */
 #define TEMP_PATH ("/.tmp")
 
-/* bucket name in the cloud */
-#define BUCKET ("yinsuc")
-
 /* log file path */
 #define LOG_FILE ("/tmp/cloudfs.log")
 
@@ -76,8 +73,8 @@ typedef enum {
   UPDATE
 } attr_flag_t;
 
+FILE *Log;
 static struct cloudfs_state State_;
-static FILE *Log;
 static char Temp_path[MAX_PATH_LEN];
 static char Bkt_prfx[MAX_PATH_LEN];
 
@@ -208,18 +205,6 @@ void cloudfs_get_key(const char *fpath, char *key)
   }
 
   dbg_print("[DBG] cloudfs_get_key(fpath=\"%s\", key=\"%s\")\n", fpath, key);
-}
-
-/* callback function for downloading from the cloud */
-static FILE *Tfile; /* temporary file */
-int get_buffer(const char *buf, int len) {
-  return fwrite(buf, 1, len, Tfile);
-}
-
-/* callback function for uploading to the cloud */
-static FILE *Cfile; /* cloud file */
-int put_buffer(char *buf, int len) {
-  return fread(buf, 1, len, Cfile);
 }
 
 /**
@@ -521,9 +506,10 @@ int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
       /* these are parameters required by the getline() function */
       char *seg_md5 = NULL;
       size_t len = 0;
-      FILE *proxy_fp = fopen(fpath, "r");
+      FILE *proxy_fp = fopen(fpath, "rb");
       if (proxy_fp == NULL) {
         retval = cloudfs_error("cloudfs_read");
+        return retval;
       }
 
       /* keep track of the file position */
@@ -1146,7 +1132,7 @@ int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
   snprintf(Bkt_prfx, MAX_PATH_LEN, "%s%s", Temp_path, "/bucket");
   dbg_print("[DBG] Bkt_prfx=%s\n", Bkt_prfx);
 
-  if (ht_init(Bkt_prfx, BKT_NUM, BKT_SIZE, Log) < 0) {
+  if (ht_init(Bkt_prfx, BKT_NUM, BKT_SIZE) < 0) {
     dbg_print("[ERR] failed to initialize hash table\n");
     exit(EXIT_FAILURE);
   }

@@ -24,7 +24,8 @@
 static char Bkt_prfx[MAX_PATH_LEN];
 static int Bkt_num;
 static int Bkt_size;
-static FILE *Log;
+
+extern FILE *Log;
 
 /* store the mmap addresses of each bucket file */
 static void **Buckets;
@@ -192,7 +193,7 @@ static int add_slots(char *bucket, int all)
  * @param log The log file passed from CloudFS.
  * @return 0 on success, -errno otherwise.
  */
-int ht_init(char *bkt_prfx, int bkt_num, int bkt_size, FILE *log)
+int ht_init(char *bkt_prfx, int bkt_num, int bkt_size)
 {
   int retval = 0;
   int fd = 0;
@@ -204,7 +205,6 @@ int ht_init(char *bkt_prfx, int bkt_num, int bkt_size, FILE *log)
   strncpy(Bkt_prfx, bkt_prfx, MAX_PATH_LEN - 1);
   Bkt_num = bkt_num;
   Bkt_size = bkt_size;
-  Log = log;
   Buckets = (void **) malloc(bkt_num * sizeof(void *));
   if (Buckets == NULL) {
     retval = cloudfs_error("ht_init - malloc");
@@ -257,8 +257,7 @@ int ht_init(char *bkt_prfx, int bkt_num, int bkt_size, FILE *log)
   }
 
   dbg_print("[DBG] ht_init(bkt_prfx=\"%s\", bkt_num=%d,"
-      " bkt_size=%d, log=0x%08x)=%d\n", bkt_prfx, bkt_num, bkt_size,
-      (unsigned int) log, retval);
+      " bkt_size=%d)=%d\n", bkt_prfx, bkt_num, bkt_size, retval);
 
   return retval;
 }
@@ -452,5 +451,17 @@ void ht_destroy(void)
   if (Buckets != NULL) {
     free(Buckets);
   }
+}
+
+/**
+ * @brief A wrapper function for msync.
+ *        This should be called everytime when an item in the hash
+ *        table is updated (such as ref_count).
+ * @param segp The segment to sync.
+ * @return Void.
+ */
+void ht_sync(struct cloudfs_seg *segp)
+{
+  msync(segp, sizeof(struct cloudfs_seg), MS_SYNC);
 }
 

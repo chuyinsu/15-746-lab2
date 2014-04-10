@@ -44,5 +44,8 @@ int cloudfs_error(char *error_str);
 
 #define DEFAULT_MODE (0777)
 
+/* bucket name in the cloud */
+#define BUCKET ("yinsuc")
+
 #endif
 
