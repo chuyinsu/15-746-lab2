@@ -78,7 +78,20 @@ static struct cloudfs_state State_;
 static char Temp_path[MAX_PATH_LEN];
 static char Bkt_prfx[MAX_PATH_LEN];
 
+/* callback function for downloading from the cloud */
+static FILE *Tfile; /* temporary file */
+static int get_buffer(const char *buf, int len) {
+  return fwrite(buf, 1, len, Tfile);
+}
+
+/* callback function for uploading to the cloud */
+static FILE *Cfile; /* cloud file */
+static int put_buffer(char *buf, int len) {
+  return fread(buf, 1, len, Cfile);
+}
+
 void cloudfs_get_key(const char *fpath, char *key);
+int cloudfs_rmdir_rec(char *path);
 
 #ifdef DEBUG
 void print_stat(const struct stat *sb)
@@ -428,14 +441,12 @@ int cloudfs_mknod(const char *path, mode_t mode, dev_t dev)
 
 /**
  * @brief Open a file.
- *        If the file is on local SSD, open it directly;
- *        otherwise, do nothing for now, only set fi->fh to 0 (invalid).
- *        The reason is:
- *        1) If the file is going to be read, corresponding
- *           segments will be downloaded by cloudfs_read();
- *        2) If the file is going to be written, according to the assumption
- *           (only sequential writes from the very beginning to files), original
- *           contents will be truncated and new content will be added.
+ *        If the file is in local SSD, open it directly;
+ *        If the file is in the cloud:
+ *          1) If dedup is disabled, download the file from the cloud and
+ *             store it locally for access.
+ *          2) If dedup is enabled, do nothing for now,
+ *             only set fi->fh to 0 (invalid).
  * @param path Pathname of the file to open.
  * @param fi Information about the opened file is returned here.
  * @return 0 on success, -errno otherwise.
@@ -443,12 +454,24 @@ int cloudfs_mknod(const char *path, mode_t mode, dev_t dev)
 int cloudfs_open(const char *path, struct fuse_file_info *fi)
 {
   int retval = 0;
-
   char fpath[MAX_PATH_LEN] = "";
+  char tpath[MAX_PATH_LEN] = "";
+  char key[MAX_PATH_LEN] = "";
+  int fd = 0;
+
   cloudfs_get_fullpath(path, fpath);
 
-  int fd = 0;
-  if (!cloudfs_is_in_cloud(fpath)) {
+  if (cloudfs_is_in_cloud(fpath)) {
+    if (State_.no_dedup) {
+      cloudfs_get_key(fpath, key);
+      cloudfs_get_temppath(fpath, tpath);
+      Tfile = fopen(tpath, "wb");
+      cloud_get_object(BUCKET, key, get_buffer);
+      cloud_print_error();
+      fclose(Tfile);
+      fd = open(tpath, O_RDWR);
+    }
+  } else {
     fd = open(fpath, O_RDWR);
   }
 
@@ -465,8 +488,13 @@ int cloudfs_open(const char *path, struct fuse_file_info *fi)
 
 /**
  * @brief Read data from an opened file.
+ *        For part 1:
  *        The underlying file descriptor has already been saved in "fi",
  *        so here we can directly use it.
+ *        For part 2:
+ *        Same logic for local files; for cloud files, download needed segments
+ *        and read them into the buffer. This avoids the effort to download
+ *        unnecessary segments.
  * @param path Pathname of the file.
  * @param buf Returned data is placed here.
  * @param size Size of the buffer.
@@ -478,18 +506,14 @@ int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
     struct fuse_file_info *fi)
 {
   int retval = 0;
-
   char fpath[MAX_PATH_LEN] = "";
   cloudfs_get_fullpath(path, fpath);
-
-  char tpath[MAX_PATH_LEN] = "";
-  cloudfs_get_temppath(fpath, tpath);
 
   dbg_print("[DBG] reading interval [%llu, %llu] of the file\n",
       offset, offset + size - 1);
 
-  if (cloudfs_is_in_cloud(fpath)) {
-    /* cloud file */
+  if (cloudfs_is_in_cloud(fpath) && (!State_.no_dedup)) {
+    /* cloud file and dedup enabled */
 
     if (fi->fh > 0) {
       /* file is dirty */
@@ -500,6 +524,9 @@ int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
         retval = cloudfs_error("cloudfs_read");
       }
     } else {
+      char tpath[MAX_PATH_LEN] = "";
+      cloudfs_get_temppath(fpath, tpath);
+
       /* file is not dirty, fetch needed segments from the cloud */
       dbg_print("[DBG] file is not dirty\n");
 
@@ -607,7 +634,7 @@ int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
       }
     }
   } else {
-    /* local file */
+    /* local file or dedup disabled */
 
     retval = pread(fi->fh, buf, size, offset);
     if (retval < 0) {
@@ -623,9 +650,13 @@ int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
 
 /**
  * @brief Write data to an opened file.
- *        The underlying file descriptor has already been saved in "fi",
- *        so here we can directly use it. Also, we need to set "user.dirty"
- *        if this file is stored in the cloud.
+ *        For local files, the underlying file descriptor has already been
+ *        saved in "fi", so here we can directly use it.
+ *        When dedup is disabledwe need to set "user.dirty" if this file is
+ *        stored in cloud.
+ *        If dedup is enabled, according to the assumption,
+ *        when a cloud file is written, its original content is invalidated
+ *        and new content is written to a new file.
  * @param path Pathname of the file to write.
  * @param buf The content to write.
  * @param size Size of the content buffer.
@@ -638,23 +669,39 @@ int cloudfs_write(const char *path, const char *buf, size_t size, off_t offset,
 {
   int retval = 0;
   char fpath[MAX_PATH_LEN] = "";
-
   cloudfs_get_fullpath(path, fpath);
 
   if (cloudfs_is_in_cloud(fpath)) {
-    int dirty = 1;
-    lsetxattr(fpath, U_DIRTY, &dirty, sizeof(int), 0);
+    if (State_.no_dedup) {
+      int dirty = 1;
+      lsetxattr(fpath, U_DIRTY, &dirty, sizeof(int), 0);
+    } else {
+      if (fi->fh <= 0) {
+        dbg_print("[DBG] cloud file is modified, old content invalidated\n");
+        char tpath[MAX_PATH_LEN] = "";
+        cloudfs_get_temppath(fpath, tpath);
+        retval = cloudfs_rmdir_rec(tpath);
+        if (retval < 0) {
+          return retval;
+        }
+        dbg_print("[DBG] temporary directory deleted\n");
+        int fd = open(tpath, O_RDWR | O_CREAT, DEFAULT_MODE);
+        if (fd < 0) {
+          retval = cloudfs_error("cloudfs_write");
+          return retval;
+        }
+        fi->fh = fd;
+        dbg_print("[DBG] temporary file created\n");
+      }
+    }
   }
-
   retval = pwrite(fi->fh, buf, size, offset);
   if (retval < 0) {
     retval = cloudfs_error("cloudfs_write");
   }
-
   dbg_print("[DBG] cloudfs_write(path=\"%s\", buf=0x%08x, size=%d, offset=%llu,"
       " fi=0x%08x)=%d\n", path, (unsigned int) buf, size, offset,
       (unsigned int) fi, retval);
-
   return retval;
 }
 
@@ -684,8 +731,9 @@ int cloudfs_rmdir_rec(char *path)
  *          - If its size does not exceed the threshold, just close it;
  *          - If its size has exceeded the threshold, move it to the cloud;
  *        For files stored in the cloud:
- *          - If fi->fh == 0, just delete the temporary segments;
- *          - If fi->fh > 0:
+ *          - If fi->fh <= 0 / is not dirty,
+ *            just delete the temporary segments/file.
+ *          - If fi->fh > 0 / is dirty:
  *            1) If its size shrinks below the threshold, move it back to SSD;
  *            2) Otherwise, replace the new version to the cloud;
  * @param path Pathname of the file to release.
@@ -695,20 +743,31 @@ int cloudfs_rmdir_rec(char *path)
 int cloudfs_release(const char *path, struct fuse_file_info *fi)
 {
   int retval = 0;
+  char fpath[MAX_PATH_LEN] = "";
+  char tpath[MAX_PATH_LEN] = "";
+  char key[MAX_PATH_LEN] = "";
   struct stat sb;
 
-  /* full path of the file: either a small file on SSD or a proxy file */
-  char fpath[MAX_PATH_LEN] = "";
   cloudfs_get_fullpath(path, fpath);
-
-  /* temporary directory/file of the file */
-  char tpath[MAX_PATH_LEN] = "";
   cloudfs_get_temppath(fpath, tpath);
+  cloudfs_get_key(fpath, key);
 
   if (cloudfs_is_in_cloud(fpath)) {
     /* cloud file */
 
-    if (fi->fh > 0) {
+    /* get dirty attribute */
+    int dirty = 0;
+    if (State_.no_dedup) {
+      retval = lgetxattr(fpath, U_DIRTY, &dirty, sizeof(int));
+      if (retval < 0) {
+        retval = cloudfs_error("cloudfs_release");
+        return retval;
+      }
+    } else {
+      dirty = (fi->fh > 0);
+    }
+
+    if (dirty) {
       /* file content changed */
       dbg_print("[DBG] file is dirty\n");
 
@@ -720,17 +779,12 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
       }
       dbg_print("[DBG] temporary file closed\n");
 
-      /* According to the assumption in the handout,
-       * this file should has been truncated to zero and then
-       * sequentially written from the beginning. */
-
       /* read the latest attributes from the temporary file */
       retval = lstat(tpath, &sb);
       if (retval < 0) {
         retval = cloudfs_error("cloudfs_release");
         return retval;
       }
-      dbg_print("[DBG] attributes read from temporary file\n");
 #ifdef DEBUG
       print_stat(&sb);
 #endif
@@ -739,10 +793,23 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
         /* move back to SSD */
         dbg_print("[DBG] file size shrinked below threshold\n");
 
-        /* delete the file in the cloud */
-        retval = dedup_layer_remove(fpath);
-        if (retval < 0) {
-          return retval;
+        if (State_.no_dedup) {
+          /* delete the file in the cloud */
+          cloud_delete_object(BUCKET, key);
+          cloud_print_error();
+
+          /* delete the proxy file */
+          retval = remove(fpath);
+          if (retval < 0) {
+            retval = cloudfs_error("cloudfs_release");
+            return retval;
+          }
+        } else {
+          /* delete the file via the dedup layer */
+          retval = dedup_layer_remove(fpath);
+          if (retval < 0) {
+            return retval;
+          }
         }
 
         /* move the temporary file to the original location on SSD */
@@ -751,21 +818,33 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
           retval = cloudfs_error("cloudfs_release");
           return retval;
         }
-        dbg_print("[DBG] temporary file %s renamed to %s\n", tpath, fpath);
 
         /* update attributes */
         int remote_attr = 0;
         int dirty_attr = 0;
         lsetxattr(fpath, U_REMOTE, &remote_attr, sizeof(int), 0);
         lsetxattr(fpath, U_DIRTY, &dirty_attr, sizeof(int), 0);
-      } else {
-        /* file size still exceeds threshold */
-        dbg_print("[DBG] file size exceeds threshold\n");
 
-        /* replace the old version in the cloud */
-        retval = dedup_layer_replace(tpath, fpath);
-        if (retval < 0) {
-          return retval;
+      } else {
+        /* synchronize to the cloud */
+        dbg_print("[DBG] file size still exceeds threshold\n");
+
+        if (State_.no_dedup) {
+          /* delete the file in the cloud */
+          cloud_delete_object(BUCKET, key);
+          cloud_print_error();
+
+          /* upload the new version */
+          Cfile = fopen(tpath, "rb");
+          cloud_put_object(BUCKET, key, sb.st_size, put_buffer);
+          cloud_print_error();
+          fclose(Cfile);
+        } else {
+          /* replace the old version in the cloud */
+          retval = dedup_layer_replace(tpath, fpath);
+          if (retval < 0) {
+            return retval;
+          }
         }
 
         /* update attributes */
@@ -782,12 +861,29 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
       /* file content not changed */
       dbg_print("[DBG] file is not dirty\n");
 
-      /* delete the temporary directory along with all segments in it on SSD */
-      retval = cloudfs_rmdir_rec(tpath);
-      if (retval < 0) {
-        return retval;
+      if (State_.no_dedup) {
+        /* close the temporary file */
+        retval = close(fi->fh);
+        if (retval < 0) {
+          retval = cloudfs_error("cloudfs_release");
+          return retval;
+        }
+        dbg_print("[DBG] temporary file closed\n");
+
+        /* remove the temporary file on SSD */
+        retval = remove(tpath);
+        if (retval < 0) {
+          retval = cloudfs_error("cloudfs_release");
+          return retval;
+        }
+      } else {
+        /* delete the temporary directory along with all segments on SSD */
+        retval = cloudfs_rmdir_rec(tpath);
+        if (retval < 0) {
+          return retval;
+        }
+        dbg_print("[DBG] temporary directory %s removed\n", tpath);
       }
-      dbg_print("[DBG] temporary directory %s removed\n", tpath);
     }
   } else {
     /* local file */
@@ -806,7 +902,6 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
       retval = cloudfs_error("cloudfs_release");
       return retval;
     }
-    dbg_print("[DBG] attributes read from local file\n");
 #ifdef DEBUG
     print_stat(&sb);
 #endif
@@ -815,10 +910,22 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
       /* move to the cloud */
       dbg_print("[DBG] file size exceeds threshold\n");
 
-      /* upload */
-      retval = dedup_layer_upload(fpath);
-      if (retval < 0) {
-        return retval;
+      if (State_.no_dedup) {
+        /* upload the entire file */
+        Cfile = fopen(fpath, "rb");
+        cloud_put_object(BUCKET, key, sb.st_size, put_buffer);
+        cloud_print_error();
+        fclose(Cfile);
+
+        /* clear the file content */
+        FILE *fp = fopen(fpath, "wb");
+        fclose(fp);
+      } else {
+        /* upload via dedup layer */
+        retval = dedup_layer_upload(fpath);
+        if (retval < 0) {
+          return retval;
+        }
       }
 
       /* update attributes */
@@ -830,6 +937,7 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
       (unsigned int) fi, retval);
 
   return retval;
+
 }
 
 /**
@@ -904,9 +1012,9 @@ int cloudfs_readdir(const char *path UNUSED, void *buf, fuse_fill_dir_t filler,
 }
 
 /**
- * @brief Initializes the FUSE file system.
+ * @brief Initialize the FUSE file system.
  *        Currently it does nothing, all important
- *        initializations are placed into cloudfs_start().
+ *        initializations are placed in cloudfs_start().
  *        The reason is that if any of them fails,
  *        CloudFS should abort instead of continuing to run.
  * @param conn Unused parameter.
@@ -926,7 +1034,9 @@ void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
  */
 void cloudfs_destroy(void *data UNUSED) {
   cloud_destroy();
-  ht_destroy();
+  if (!State_.no_dedup) {
+    ht_destroy();
+  }
   dbg_print("[DBG] cloudfs_destroy()\n");
 }
 
@@ -1016,11 +1126,22 @@ int cloudfs_unlink(const char *path)
 {
   int retval = 0;
   char fpath[MAX_PATH_LEN] = "";
+  char key[MAX_PATH_LEN] = "";
 
   cloudfs_get_fullpath(path, fpath);
 
   if (cloudfs_is_in_cloud(fpath)) {
-    retval = dedup_layer_remove(fpath);
+    if (State_.no_dedup) {
+      cloudfs_get_key(fpath, key);
+      cloud_delete_object(BUCKET, key);
+      cloud_print_error();
+      retval = unlink(fpath);
+      if (retval < 0) {
+        retval = cloudfs_error("cloudfs_unlink");
+      }
+    } else {
+      retval = dedup_layer_remove(fpath);
+    }
   } else {
     retval = unlink(fpath);
     if (retval < 0) {
@@ -1132,9 +1253,17 @@ int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
   snprintf(Bkt_prfx, MAX_PATH_LEN, "%s%s", Temp_path, "/bucket");
   dbg_print("[DBG] Bkt_prfx=%s\n", Bkt_prfx);
 
-  if (ht_init(Bkt_prfx, BKT_NUM, BKT_SIZE) < 0) {
-    dbg_print("[ERR] failed to initialize hash table\n");
-    exit(EXIT_FAILURE);
+  if (!State_.no_dedup) {
+    dbg_print("[DBG] dedup enabled\n");
+    if (ht_init(Bkt_prfx, BKT_NUM, BKT_SIZE) < 0) {
+      dbg_print("[ERR] failed to initialize hash table\n");
+      exit(EXIT_FAILURE);
+    }
+    if (dedup_layer_init(State_.rabin_window_size, State_.avg_seg_size,
+          State_.avg_seg_size / 2, State_.avg_seg_size * 2) < 0) {
+      dbg_print("[ERR] failed to initialize rabin fingerprinting library\n");
+      exit(EXIT_FAILURE);
+    }
   }
 
   int fuse_stat = fuse_main(argc, argv, &Cloudfs_operations, NULL);

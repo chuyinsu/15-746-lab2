@@ -11,19 +11,37 @@
 #include "cloudapi.h"
 #include "cloudfs.h"
 #include "hashtable.h"
+#include "dedup.h"
 
 extern FILE *Log;
+static rabinpoly_t *rp;
 
 /* callback function for downloading from the cloud */
 static FILE *Tfile; /* temporary file */
-int get_buffer(const char *buf, int len) {
+static int get_buffer(const char *buf, int len) {
   return fwrite(buf, 1, len, Tfile);
 }
 
 /* callback function for uploading to the cloud */
 static FILE *Cfile; /* cloud file */
-int put_buffer(char *buf, int len) {
+static int put_buffer(char *buf, int len) {
   return fread(buf, 1, len, Cfile);
+}
+
+/**
+ * @brief Initialize the dedup layer.
+ * @param Parameters required to initialize Rabin Fingerprinting library.
+ * @return 0 on success, -1 otherwise.
+ */
+int dedup_layer_init(int window_size, int avg_seg_size, int min_seg_size,
+    int max_seg_size)
+{
+  rp = rabin_init(window_size, avg_seg_size, min_seg_size, max_seg_size);
+  if (rp == NULL) {
+    return -1;
+  } else {
+    return 0;
+  }
 }
 
 /**
