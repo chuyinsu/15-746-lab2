@@ -58,12 +58,12 @@ static int dedup_layer_update_segments(int *num_seg, struct cloudfs_seg **segs,
     retval = cloudfs_error("dedup_layer_update_segments");
     return retval;
   }
+  dbg_print("[DBG] memory (re-)allocated\n");
 
   struct cloudfs_seg *new_seg = (*segs) + old_size;
   new_seg->ref_count = 0;
   new_seg->seg_size = segment_len;
   memcpy(new_seg->md5, md5, MD5_DIGEST_LENGTH);
-
 #ifdef DEBUG
   print_seg(new_seg);
 #endif
@@ -189,9 +189,6 @@ int dedup_layer_read_seg(char *cache_dir, struct cloudfs_seg *segp, char *buf,
     int size, long offset)
 {
   int retval = 0;
-  DIR *dir = NULL;
-  struct dirent *ent = NULL;
-  int found = 0;
 
   char key[MD5_DIGEST_LENGTH + 1] = "";
   memcpy(key, segp->md5, MD5_DIGEST_LENGTH);
@@ -201,33 +198,13 @@ int dedup_layer_read_seg(char *cache_dir, struct cloudfs_seg *segp, char *buf,
   snprintf(tpath, MAX_PATH_LEN, "%s/%s", cache_dir, key);
   dbg_print("[DBG] local file path %s\n", tpath);
 
-  dbg_print("[DBG] scanning cache directory %s\n", cache_dir);
-  if ((dir = opendir(cache_dir)) != NULL) {
-    while ((ent = readdir(dir)) != NULL) {
-      dbg_print("[DBG] file name %s\n", ent->d_name);
-      if (memcmp(segp->md5, ent->d_name, MD5_DIGEST_LENGTH) == 0) {
-        dbg_print("[DBG] match found\n");
-        found = 1;
-        break;
-      }
-    }
-    retval = closedir(dir);
-    if (retval < 0) {
-      retval = cloudfs_error("dedup_layer_read_seg");
-      return retval;
-    }
-  } else {
-    retval = cloudfs_error("dedup_layer_read_seg");
-    return retval;
-  }
-
-  if (!found) {
-    dbg_print("[DBG] match not found\n");
-
+  if (access(tpath, F_OK) < 0) {
+    dbg_print("[DBG] segment not found in cache directory\n");
     Tfile = fopen(tpath, "wb");
     cloud_get_object(BUCKET, key, get_buffer);
     cloud_print_error();
     fclose(Tfile);
+    dbg_print("[DBG] segment downloaded from the cloud\n");
   }
 
   int fd = open(tpath, O_RDONLY);
@@ -262,7 +239,7 @@ static int dedup_layer_add_seg(struct cloudfs_seg *segp, char *fpath,
 {
   int retval = 0;
 
-  dbg_print("[DBG] adding segment offset %ld in file %s\n", offset, fpath);
+  dbg_print("[DBG] adding segment - offset %ld in file %s\n", offset, fpath);
 #ifdef DEBUG
   print_seg(segp);
 #endif
@@ -378,7 +355,7 @@ int dedup_layer_remove(char *fpath)
     if (seg_md5 != NULL) {
       free(seg_md5);
     }
-    dbg_print("[DBG] deleting segment\n");
+    dbg_print("[DBG] next segment in proxy file\n");
 #ifdef DEBUG
     print_seg(&seg);
 #endif
@@ -465,6 +442,10 @@ int dedup_layer_replace(char *new_version, char *fpath)
     for (i = 0; i < num_new_seg; i++) {
       if ((memcmp(new_version_segs[i].md5, seg_md5, MD5_DIGEST_LENGTH) == 0)
           && (new_version_segs[i].ref_count == 0)) {
+        dbg_print("[DBG] match found in new segments, index %d\n", i);
+#ifdef DEBUG
+        print_seg(&(new_version_segs[i]));
+#endif
         match = 1;
         new_version_segs[i].ref_count = 1;
         break;
@@ -472,30 +453,40 @@ int dedup_layer_replace(char *new_version, char *fpath)
     }
 
     if (!match) {
+      dbg_print("[DBG] match not found, delete old segment\n");
       retval = dedup_layer_remove_seg(&old_seg);
       if (retval < 0) {
         return retval;
       }
     }
   }
+
   fclose(proxy_fp);
 
   /* at this point, all old segments are processed - either deleted or
    * remained (because the new version also has it) */
 
+  /* update the proxy file */
   proxy_fp = fopen(fpath, "wb");
   if (proxy_fp == NULL) {
     retval = cloudfs_error("dedup_layer_replace");
     return retval;
   }
+
   int j = 0;
   long offset = 0;
   for (i = 0; i < num_new_seg; i++) {
+    dbg_print("[DBG] segment offset %ld\n", offset);
     for (j = 0; j < MD5_DIGEST_LENGTH; j++) {
       fprintf(proxy_fp, "%c", new_version_segs[i].md5[j]);
     }
     fprintf(proxy_fp, "-%ld\n", new_version_segs[i].seg_size);
+    dbg_print("[DBG] segment added to proxy file\n");
+#ifdef DEBUG
+    print_seg(&(new_version_segs[i]));
+#endif
     if (new_version_segs[i].ref_count == 0) {
+      dbg_print("[DBG] this segment needs to be uploaded\n");
       new_version_segs[i].ref_count = 1;
       retval = dedup_layer_add_seg(&(new_version_segs[i]), new_version, offset);
       if (retval < 0) {
@@ -506,7 +497,6 @@ int dedup_layer_replace(char *new_version, char *fpath)
   }
 
   fclose(proxy_fp);
-
   free(new_version_segs);
 
   dbg_print("[DBG] dedup_layer_replace(new_version=\"%s\", fpath=\"%s\")=%d\n",
@@ -543,14 +533,21 @@ int dedup_layer_upload(char *fpath)
     retval = cloudfs_error("dedup_layer_upload");
     return retval;
   }
+  dbg_print("[DBG] temporary proxy file is %s\n", proxy_tmp);
+
   int i = 0;
   int j = 0;
   long offset = 0;
   for (i = 0; i < num_seg; i++) {
+    dbg_print("[DBG] segment offset %ld\n", offset);
     for (j = 0; j < MD5_DIGEST_LENGTH; j++) {
       fprintf(proxy_fp, "%c", segs[i].md5[j]);
     }
     fprintf(proxy_fp, "-%ld\n", segs[i].seg_size);
+    dbg_print("[DBG] segment added to proxy file\n");
+#ifdef DEBUG
+    print_seg(&(segs[i]));
+#endif
     segs[i].ref_count = 1;
     retval = dedup_layer_add_seg(&(segs[i]), fpath, offset);
     if (retval < 0) {
@@ -562,10 +559,22 @@ int dedup_layer_upload(char *fpath)
   free(segs);
 
   /* delete the original file */
-  unlink(fpath);
+  retval = unlink(fpath);
+  if (retval < 0) {
+    retval = cloudfs_error("dedup_layer_upload");
+    return retval;
+  }
+  dbg_print("[DBG] old proxy file removed\n");
 
   /* rename the proxy file to the original file's name */
-  rename(proxy_tmp, fpath);
+  retval = rename(proxy_tmp, fpath);
+  if (retval < 0) {
+    retval = cloudfs_error("dedup_layer_upload");
+    return retval;
+  }
+  dbg_print("[DBG] temporary proxy file renamed\n");
+
+  dbg_print("[DBG] dedup_layer_upload(fpath=\"%s\")=%d\n", fpath, retval);
 
   return retval;
 }

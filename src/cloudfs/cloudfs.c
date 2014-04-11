@@ -54,10 +54,11 @@
 #define U_ATIME ("user.st_atime")
 #define U_MTIME ("user.st_mtime")
 #define U_CTIME ("user.st_ctime")
+
 #define U_REMOTE ("user.remote")
 #define U_DIRTY ("user.dirty")
 
-/* temporary path to store downloaded files from the cloud */
+/* temporary path for CloudFS */
 #define TEMP_PATH ("/.tmp")
 
 /* log file path */
@@ -463,6 +464,7 @@ int cloudfs_open(const char *path, struct fuse_file_info *fi)
 
   if (cloudfs_is_in_cloud(fpath)) {
     if (State_.no_dedup) {
+      dbg_print("[DBG] dedup is disabled, download the entire file\n");
       cloudfs_get_key(fpath, key);
       cloudfs_get_temppath(fpath, tpath);
       Tfile = fopen(tpath, "wb");
@@ -514,6 +516,7 @@ int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
 
   if (cloudfs_is_in_cloud(fpath) && (!State_.no_dedup)) {
     /* cloud file and dedup enabled */
+    dbg_print("[DBG] this is a cloud file and dedup enabled\n");
 
     if (fi->fh > 0) {
       /* file is dirty */
@@ -635,6 +638,7 @@ int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
     }
   } else {
     /* local file or dedup disabled */
+    dbg_print("[DBG] this is a local file or dedup is disabled\n");
 
     retval = pread(fi->fh, buf, size, offset);
     if (retval < 0) {
@@ -652,7 +656,7 @@ int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
  * @brief Write data to an opened file.
  *        For local files, the underlying file descriptor has already been
  *        saved in "fi", so here we can directly use it.
- *        When dedup is disabledwe need to set "user.dirty" if this file is
+ *        When dedup is disabled we need to set "user.dirty" if this file is
  *        stored in cloud.
  *        If dedup is enabled, according to the assumption,
  *        when a cloud file is written, its original content is invalidated
@@ -1034,6 +1038,7 @@ void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
  */
 void cloudfs_destroy(void *data UNUSED) {
   cloud_destroy();
+  fclose(Log);
   if (!State_.no_dedup) {
     ht_destroy();
     dedup_layer_destroy();
@@ -1228,7 +1233,7 @@ int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
   /* initialize .tmp directory */
   memset(Temp_path, '\0', MAX_PATH_LEN);
   snprintf(Temp_path, MAX_PATH_LEN, "%s%s", State_.ssd_path, TEMP_PATH);
-  dbg_print("[DBG] Temp_path=%s\n", Temp_path);
+  dbg_print("[DBG] Temp_path=\"%s\"\n", Temp_path);
   if (mkdir(Temp_path, DEFAULT_MODE) < 0) {
     if (errno != EEXIST) {
       dbg_print("[ERR] failed to create .tmp directory\n");
@@ -1252,7 +1257,7 @@ int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
 
   memset(Bkt_prfx, '\0', MAX_PATH_LEN);
   snprintf(Bkt_prfx, MAX_PATH_LEN, "%s%s", Temp_path, "/bucket");
-  dbg_print("[DBG] Bkt_prfx=%s\n", Bkt_prfx);
+  dbg_print("[DBG] Bkt_prfx=\"%s\"\n", Bkt_prfx);
 
   if (!State_.no_dedup) {
     dbg_print("[DBG] dedup enabled\n");
@@ -1262,9 +1267,11 @@ int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
     }
     if (dedup_layer_init(State_.rabin_window_size, State_.avg_seg_size,
           State_.avg_seg_size / 2, State_.avg_seg_size * 2) < 0) {
-      dbg_print("[ERR] failed to initialize rabin fingerprinting library\n");
+      dbg_print("[ERR] failed to initialize dedup layer\n");
       exit(EXIT_FAILURE);
     }
+  } else {
+    dbg_print("[DBG] dedup disabled\n");
   }
 
   int fuse_stat = fuse_main(argc, argv, &Cloudfs_operations, NULL);
