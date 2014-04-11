@@ -561,8 +561,8 @@ int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
         /* build the segment structure */
         struct cloudfs_seg seg;
         seg.ref_count = 0;
-        seg.seg_size = (int) strtol(seg_md5 + MD5_DIGEST_LENGTH + 1, NULL, 10);
-        memcpy(seg.md5, seg_md5, MD5_DIGEST_LENGTH);
+        seg.seg_size = (int) strtol(seg_md5 + 2 * MD5_DIGEST_LENGTH + 1, NULL, 10);
+        memcpy(seg.md5, seg_md5, 2 * MD5_DIGEST_LENGTH);
         if (seg_md5 != NULL) {
           free(seg_md5);
         }

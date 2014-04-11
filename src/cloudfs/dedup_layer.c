@@ -30,16 +30,19 @@ static int put_buffer(char *buf, int len) {
   return fread(buf, 1, len, Cfile);
 }
 
+void dedup_layer_get_key(char *md5, char *key);
+
 /**
  * @brief A helper function to dedup_layer_segmentation.
  *        It allocates memory for newly found segments.
  * @param num_seg Number of segments is updated here.
  * @param segs Segments are updated here.
  * @param segment_len The length of the new segment.
+ * @param md5 The MD5 of the new segment.
  * @return 0 on success, -errno otherwise.
  */
 static int dedup_layer_update_segments(int *num_seg, struct cloudfs_seg **segs,
-    int segment_len, unsigned char *md5)
+    int segment_len, char *md5)
 {
   int retval = 0;
   dbg_print("[DBG] new segment found\n");
@@ -63,7 +66,7 @@ static int dedup_layer_update_segments(int *num_seg, struct cloudfs_seg **segs,
   struct cloudfs_seg *new_seg = (*segs) + old_size;
   new_seg->ref_count = 0;
   new_seg->seg_size = segment_len;
-  memcpy(new_seg->md5, md5, MD5_DIGEST_LENGTH);
+  memcpy(new_seg->md5, md5, 2 * MD5_DIGEST_LENGTH);
 #ifdef DEBUG
   print_seg(new_seg);
 #endif
@@ -112,7 +115,10 @@ static int dedup_layer_segmentation(char *fpath, int *num_seg,
       if (new_segment) {
         MD5_Final(md5, &ctx);
 
-        retval = dedup_layer_update_segments(num_seg, segs, segment_len, md5);
+        char ch_md5[2 * MD5_DIGEST_LENGTH + 1] = "";
+        dedup_layer_get_key((char *) md5, ch_md5);
+        retval = dedup_layer_update_segments(num_seg, segs, segment_len,
+            ch_md5);
         if (retval < 0) {
           return retval;
         }
@@ -135,7 +141,9 @@ static int dedup_layer_segmentation(char *fpath, int *num_seg,
   }
   MD5_Final(md5, &ctx);
 
-  retval = dedup_layer_update_segments(num_seg, segs, segment_len, md5);
+  char ch_md5[2 * MD5_DIGEST_LENGTH + 1] = "";
+  dedup_layer_get_key((char *) md5, ch_md5);
+  retval = dedup_layer_update_segments(num_seg, segs, segment_len, ch_md5);
   if (retval < 0) {
     return retval;
   }
@@ -190,18 +198,16 @@ int dedup_layer_read_seg(char *cache_dir, struct cloudfs_seg *segp, char *buf,
 {
   int retval = 0;
 
-  char key[MD5_DIGEST_LENGTH + 1] = "";
-  memcpy(key, segp->md5, MD5_DIGEST_LENGTH);
-  dbg_print("[DBG] cloud key is %s\n", key);
+  dbg_print("[DBG] cloud key is %s\n", segp->md5);
 
   char tpath[MAX_PATH_LEN] = "";
-  snprintf(tpath, MAX_PATH_LEN, "%s/%s", cache_dir, key);
+  snprintf(tpath, MAX_PATH_LEN, "%s/%s", cache_dir, segp->md5);
   dbg_print("[DBG] local file path %s\n", tpath);
 
   if (access(tpath, F_OK) < 0) {
     dbg_print("[DBG] segment not found in cache directory\n");
     Tfile = fopen(tpath, "wb");
-    cloud_get_object(BUCKET, key, get_buffer);
+    cloud_get_object(BUCKET, segp->md5, get_buffer);
     cloud_print_error();
     fclose(Tfile);
     dbg_print("[DBG] segment downloaded from the cloud\n");
@@ -223,6 +229,22 @@ int dedup_layer_read_seg(char *cache_dir, struct cloudfs_seg *segp, char *buf,
       cache_dir, (unsigned int) segp, (unsigned int) buf, size, offset, retval);
 
   return retval;
+}
+
+/**
+ * @brief A helper function to convert the numeric MD5 representation
+ *        to character MD5 representation.
+ * @param md5 The numeric MD5.
+ * @param key The character MD5 is returned here. It should have at least
+ *            MD5_DIGEST_LENGTH bytes.
+ * @return Void.
+ */
+void dedup_layer_get_key(char *md5, char *key)
+{
+  int i = 0;
+  for (i = 0; i < 2 * MD5_DIGEST_LENGTH; i = i + 2) {
+    sprintf(key + i, "%02x", md5[i]);
+  }
 }
 
 /**
@@ -260,14 +282,12 @@ static int dedup_layer_add_seg(struct cloudfs_seg *segp, char *fpath,
   } else {
     dbg_print("[DBG] segment to add not found in hash table\n");
 
-    char key[MD5_DIGEST_LENGTH + 1] = "";
-    memcpy(key, segp->md5, MD5_DIGEST_LENGTH);
-    dbg_print("[DBG] cloud key is %s\n", key);
+    dbg_print("[DBG] cloud key is %s\n", segp->md5);
 
     /* upload the segment */
     Cfile = fopen(fpath, "rb");
     fseek(Cfile, offset, SEEK_SET);
-    cloud_put_object(BUCKET, key, segp->seg_size, put_buffer);
+    cloud_put_object(BUCKET, segp->md5, segp->seg_size, put_buffer);
     cloud_print_error();
     fclose(Cfile);
     dbg_print("[DBG] uploaded to the cloud\n");
@@ -308,9 +328,7 @@ static int dedup_layer_remove_seg(struct cloudfs_seg *segp)
     (found->ref_count)--;
     ht_sync(found);
     if (found->ref_count == 0) {
-      char key[MD5_DIGEST_LENGTH + 1] = "";
-      memcpy(key, segp->md5, MD5_DIGEST_LENGTH);
-      cloud_delete_object(BUCKET, key);
+      cloud_delete_object(BUCKET, segp->md5);
       cloud_print_error();
     }
   } else {
@@ -350,8 +368,8 @@ int dedup_layer_remove(char *fpath)
     /* build the segment structure */
     struct cloudfs_seg seg;
     seg.ref_count = 0;
-    seg.seg_size = (int) strtol(seg_md5 + MD5_DIGEST_LENGTH + 1, NULL, 10);
-    memcpy(seg.md5, seg_md5, MD5_DIGEST_LENGTH);
+    seg.seg_size = (int) strtol(seg_md5 + 2 * MD5_DIGEST_LENGTH + 1, NULL, 10);
+    memcpy(seg.md5, seg_md5, 2 * MD5_DIGEST_LENGTH);
     if (seg_md5 != NULL) {
       free(seg_md5);
     }
@@ -422,8 +440,8 @@ int dedup_layer_replace(char *new_version, char *fpath)
     /* build the segment structure */
     struct cloudfs_seg old_seg;
     old_seg.ref_count = 0;
-    old_seg.seg_size = (int) strtol(seg_md5 + MD5_DIGEST_LENGTH + 1, NULL, 10);
-    memcpy(old_seg.md5, seg_md5, MD5_DIGEST_LENGTH);
+    old_seg.seg_size = (int) strtol(seg_md5 + 2 * MD5_DIGEST_LENGTH + 1, NULL, 10);
+    memcpy(old_seg.md5, seg_md5, 2 * MD5_DIGEST_LENGTH);
     if (seg_md5 != NULL) {
       free(seg_md5);
     }
@@ -440,7 +458,7 @@ int dedup_layer_replace(char *new_version, char *fpath)
 
     int match = 0;
     for (i = 0; i < num_new_seg; i++) {
-      if ((memcmp(new_version_segs[i].md5, seg_md5, MD5_DIGEST_LENGTH) == 0)
+      if ((memcmp(new_version_segs[i].md5, seg_md5, 2 * MD5_DIGEST_LENGTH) == 0)
           && (new_version_segs[i].ref_count == 0)) {
         dbg_print("[DBG] match found in new segments, index %d\n", i);
 #ifdef DEBUG
@@ -473,14 +491,11 @@ int dedup_layer_replace(char *new_version, char *fpath)
     return retval;
   }
 
-  int j = 0;
   long offset = 0;
   for (i = 0; i < num_new_seg; i++) {
     dbg_print("[DBG] segment offset %ld\n", offset);
-    for (j = 0; j < MD5_DIGEST_LENGTH; j++) {
-      fprintf(proxy_fp, "%c", new_version_segs[i].md5[j]);
-    }
-    fprintf(proxy_fp, "-%ld\n", new_version_segs[i].seg_size);
+    fprintf(proxy_fp, "%s-%ld\n", new_version_segs[i].md5,
+        new_version_segs[i].seg_size);
     dbg_print("[DBG] segment added to proxy file\n");
 #ifdef DEBUG
     print_seg(&(new_version_segs[i]));
@@ -536,14 +551,10 @@ int dedup_layer_upload(char *fpath)
   dbg_print("[DBG] temporary proxy file is %s\n", proxy_tmp);
 
   int i = 0;
-  int j = 0;
   long offset = 0;
   for (i = 0; i < num_seg; i++) {
     dbg_print("[DBG] segment offset %ld\n", offset);
-    for (j = 0; j < MD5_DIGEST_LENGTH; j++) {
-      fprintf(proxy_fp, "%c", segs[i].md5[j]);
-    }
-    fprintf(proxy_fp, "-%ld\n", segs[i].seg_size);
+    fprintf(proxy_fp, "%s-%ld\n", segs[i].md5, segs[i].seg_size);
     dbg_print("[DBG] segment added to proxy file\n");
 #ifdef DEBUG
     print_seg(&(segs[i]));

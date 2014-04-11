@@ -25,7 +25,7 @@ struct cloudfs_state {
 struct cloudfs_seg {
   int ref_count;
   long seg_size;
-  unsigned char md5[MD5_DIGEST_LENGTH];
+  char md5[MD5_DIGEST_LENGTH * 2 + 1];
 };
 
 int cloudfs_start(struct cloudfs_state* state,

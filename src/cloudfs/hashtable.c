@@ -33,15 +33,10 @@ static void **Buckets;
 #ifdef DEBUG
 void print_seg(struct cloudfs_seg *segp)
 {
-  int i = 0;
   dbg_print("[DBG] print segment 0x%08x\n", (unsigned int) segp);
   dbg_print("      ref_count=%d\n", segp->ref_count);
   dbg_print("      seg_size=%ld\n", segp->seg_size);
-  dbg_print("      md5=");
-  for (i = 0; i < MD5_DIGEST_LENGTH; i++) {
-    dbg_print("%02x", segp->md5[i]);
-  }
-  dbg_print("\n");
+  dbg_print("      md5=%s\n", segp->md5);
 }
 #endif
 
@@ -167,7 +162,9 @@ static int add_slots(char *bucket, int all)
       (mstart + start_size + i * sizeof(struct cloudfs_seg));
     slotp->ref_count = 0;
     slotp->seg_size = 0;
-    memcpy(slotp->md5, "fakefakefakefake", MD5_DIGEST_LENGTH);
+    memset(slotp->md5, '\0', 2 * MD5_DIGEST_LENGTH + 1);
+    memcpy(slotp->md5, "fakefakefakefakefakefakefakefake",
+        2 * MD5_DIGEST_LENGTH);
   }
 
   /* unmap the bucket, sync to disk */
@@ -269,11 +266,11 @@ int ht_init(char *bkt_prfx, int bkt_num, int bkt_size)
  * @param md5 MD5 of a segment.
  * @return The calculated hash value for the hash table.
  */
-static int hash_value(unsigned char *md5)
+static int hash_value(char *md5)
 {
   int i = 0;
   int sum = 0;
-  for (i = 0; i < MD5_DIGEST_LENGTH; i++) {
+  for (i = 0; i < 2 * MD5_DIGEST_LENGTH; i++) {
     sum += (int) md5[i];
   }
   dbg_print("[DBG] hash value is %d\n", sum);
@@ -321,7 +318,7 @@ int ht_insert(struct cloudfs_seg *segp)
       dbg_print("[DBG] slot %d is available\n", i);
       slotp->ref_count = segp->ref_count;
       slotp->seg_size = segp->seg_size;
-      memcpy(slotp->md5, segp->md5, MD5_DIGEST_LENGTH);
+      memcpy(slotp->md5, segp->md5, 2 * MD5_DIGEST_LENGTH);
       msync(slotp, sizeof(struct cloudfs_seg), MS_SYNC);
       success = 1;
       break;
@@ -367,7 +364,7 @@ int ht_insert(struct cloudfs_seg *segp)
       (Buckets[bucket_id] + sb.st_size / 2);
     slotp->ref_count = segp->seg_size;
     slotp->seg_size = segp->seg_size;
-    memcpy(slotp->md5, segp->md5, MD5_DIGEST_LENGTH);
+    memcpy(slotp->md5, segp->md5, 2 * MD5_DIGEST_LENGTH);
     msync(slotp, sizeof(struct cloudfs_seg), MS_SYNC);
   }
 
@@ -411,7 +408,7 @@ int ht_search(struct cloudfs_seg *segp, struct cloudfs_seg **found)
     struct cloudfs_seg *slotp = (struct cloudfs_seg *)
       (Buckets[bucket_id] + i * sizeof(struct cloudfs_seg));
     if ((slotp->ref_count > 0) && (slotp->seg_size == segp->seg_size)
-        && (memcmp(slotp->md5, segp->md5, MD5_DIGEST_LENGTH) == 0)) {
+        && (memcmp(slotp->md5, segp->md5, 2 * MD5_DIGEST_LENGTH) == 0)) {
       dbg_print("[DBG] segment found at slot %d\n", i);
       *found = slotp;
       return retval;
