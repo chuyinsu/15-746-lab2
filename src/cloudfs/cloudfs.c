@@ -66,7 +66,9 @@
 
 /* hash table configurations */
 #define BKT_NUM (11) /* 11 buckets */
-#define BKT_SIZE (72) /* each bucket holds 3 segments initially */
+
+/* each bucket holds 3 segments initially */
+#define BKT_SIZE (3 * sizeof(struct cloudfs_seg))
 
 /* flags used when updating file attributes */
 typedef enum {
@@ -188,7 +190,7 @@ void cloudfs_get_temppath(const char *fpath, char *tpath)
 {
   char key[MAX_PATH_LEN] = "";
   cloudfs_get_key(fpath, key);
-  snprintf(tpath, MAX_PATH_LEN, "%s%s", Temp_path, key);
+  snprintf(tpath, MAX_PATH_LEN, "%s/%s", Temp_path, key);
 
   dbg_print("[DBG] cloudfs_get_temppath(fpath=\"%s\", tpath=\"%s\")\n", fpath,
       tpath);
@@ -533,6 +535,9 @@ int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
       /* file is not dirty, fetch needed segments from the cloud */
       dbg_print("[DBG] file is not dirty\n");
 
+      /* create the temporary directory for the file */
+      mkdir(tpath, DEFAULT_MODE);
+
       /* these are parameters required by the getline() function */
       char *seg_md5 = NULL;
       size_t len = 0;
@@ -543,8 +548,8 @@ int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
       }
 
       /* keep track of the file position */
-      int seg_start_pos = -1;
-      int seg_end_pos = 0;
+      int seg_start_pos = 0;
+      int seg_end_pos = -1;
 
       /* calculate the span of the current segment that we need */
       int seg_local_offset = 0;
@@ -561,10 +566,14 @@ int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
         /* build the segment structure */
         struct cloudfs_seg seg;
         seg.ref_count = 0;
-        seg.seg_size = (int) strtol(seg_md5 + 2 * MD5_DIGEST_LENGTH + 1, NULL, 10);
+        seg.seg_size =
+          (int) strtol(seg_md5 + 2 * MD5_DIGEST_LENGTH + 1, NULL, 10);
+        memset(seg.md5, '\0', 2 * MD5_DIGEST_LENGTH + 1);
         memcpy(seg.md5, seg_md5, 2 * MD5_DIGEST_LENGTH);
         if (seg_md5 != NULL) {
           free(seg_md5);
+          seg_md5 = NULL;
+          len = 0;
         }
         dbg_print("[DBG] next segment from proxy file\n");
 #ifdef DEBUG
@@ -626,14 +635,15 @@ int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
           return retval;
         }
 
-        memcpy(buf + filled, seg_buf, seg_local_size);
-        filled += seg_local_size;
-
+        memcpy(buf + filled, seg_buf, retval);
+        filled += retval;
       } /* end of while */
 
       retval = fclose(proxy_fp);
       if (retval == EOF) {
         retval = cloudfs_error("cloudfs_read");
+      } else {
+        retval = filled;
       }
     }
   } else {

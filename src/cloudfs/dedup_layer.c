@@ -30,7 +30,7 @@ static int put_buffer(char *buf, int len) {
   return fread(buf, 1, len, Cfile);
 }
 
-void dedup_layer_get_key(char *md5, char *key);
+void dedup_layer_get_key(unsigned char *md5, char *key);
 
 /**
  * @brief A helper function to dedup_layer_segmentation.
@@ -56,16 +56,21 @@ static int dedup_layer_update_segments(int *num_seg, struct cloudfs_seg **segs,
   dbg_print("[DBG] new size is %d * %d = %d\n",
       *num_seg, sizeof(struct cloudfs_seg), new_size);
 
-  (*segs) = (struct cloudfs_seg *) realloc((*segs), new_size);
-  if (*segs == NULL) {
+  struct cloudfs_seg *enlarge =
+    (struct cloudfs_seg *) realloc((*segs), new_size);
+  if (enlarge == NULL) {
     retval = cloudfs_error("dedup_layer_update_segments");
     return retval;
+  } else {
+    (*segs) = enlarge;
   }
   dbg_print("[DBG] memory (re-)allocated\n");
 
-  struct cloudfs_seg *new_seg = (*segs) + old_size;
+  struct cloudfs_seg *new_seg = (struct cloudfs_seg *)
+    ((char *) (*segs) + old_size);
   new_seg->ref_count = 0;
   new_seg->seg_size = segment_len;
+  memset(new_seg->md5, '\0', 2 * MD5_DIGEST_LENGTH + 1);
   memcpy(new_seg->md5, md5, 2 * MD5_DIGEST_LENGTH);
 #ifdef DEBUG
   print_seg(new_seg);
@@ -116,7 +121,7 @@ static int dedup_layer_segmentation(char *fpath, int *num_seg,
         MD5_Final(md5, &ctx);
 
         char ch_md5[2 * MD5_DIGEST_LENGTH + 1] = "";
-        dedup_layer_get_key((char *) md5, ch_md5);
+        dedup_layer_get_key(md5, ch_md5);
         retval = dedup_layer_update_segments(num_seg, segs, segment_len,
             ch_md5);
         if (retval < 0) {
@@ -142,7 +147,7 @@ static int dedup_layer_segmentation(char *fpath, int *num_seg,
   MD5_Final(md5, &ctx);
 
   char ch_md5[2 * MD5_DIGEST_LENGTH + 1] = "";
-  dedup_layer_get_key((char *) md5, ch_md5);
+  dedup_layer_get_key(md5, ch_md5);
   retval = dedup_layer_update_segments(num_seg, segs, segment_len, ch_md5);
   if (retval < 0) {
     return retval;
@@ -191,7 +196,7 @@ void dedup_layer_destroy(void)
  * @param buf The buffer to hold the returned data.
  * @param size Size of the buffer.
  * @param offset The offset into the segment to start reading.
- * @return 0 on success, -errno otherwise.
+ * @return Size read on success, -errno otherwise.
  */
 int dedup_layer_read_seg(char *cache_dir, struct cloudfs_seg *segp, char *buf,
     int size, long offset)
@@ -221,7 +226,7 @@ int dedup_layer_read_seg(char *cache_dir, struct cloudfs_seg *segp, char *buf,
 
   retval = pread(fd, buf, size, offset);
   if (retval < 0) {
-    retval = cloudfs_error("cloudfs_read");
+    retval = cloudfs_error("dedup_layer_read_seg");
   }
 
   dbg_print("[DBG] dedup_layer_read_seg(cache_dir=\"%s\","
@@ -239,11 +244,11 @@ int dedup_layer_read_seg(char *cache_dir, struct cloudfs_seg *segp, char *buf,
  *            MD5_DIGEST_LENGTH bytes.
  * @return Void.
  */
-void dedup_layer_get_key(char *md5, char *key)
+void dedup_layer_get_key(unsigned char *md5, char *key)
 {
   int i = 0;
   for (i = 0; i < 2 * MD5_DIGEST_LENGTH; i = i + 2) {
-    sprintf(key + i, "%02x", md5[i]);
+    sprintf(key + i, "%02x", md5[i / 2]);
   }
 }
 
@@ -369,9 +374,12 @@ int dedup_layer_remove(char *fpath)
     struct cloudfs_seg seg;
     seg.ref_count = 0;
     seg.seg_size = (int) strtol(seg_md5 + 2 * MD5_DIGEST_LENGTH + 1, NULL, 10);
+    memset(seg.md5, '\0', 2 * MD5_DIGEST_LENGTH + 1);
     memcpy(seg.md5, seg_md5, 2 * MD5_DIGEST_LENGTH);
     if (seg_md5 != NULL) {
       free(seg_md5);
+      seg_md5 = NULL;
+      len = 0;
     }
     dbg_print("[DBG] next segment in proxy file\n");
 #ifdef DEBUG
@@ -440,10 +448,14 @@ int dedup_layer_replace(char *new_version, char *fpath)
     /* build the segment structure */
     struct cloudfs_seg old_seg;
     old_seg.ref_count = 0;
-    old_seg.seg_size = (int) strtol(seg_md5 + 2 * MD5_DIGEST_LENGTH + 1, NULL, 10);
+    old_seg.seg_size =
+      (int) strtol(seg_md5 + 2 * MD5_DIGEST_LENGTH + 1, NULL, 10);
+    memset(old_seg.md5, '\0', 2 * MD5_DIGEST_LENGTH + 1);
     memcpy(old_seg.md5, seg_md5, 2 * MD5_DIGEST_LENGTH);
     if (seg_md5 != NULL) {
       free(seg_md5);
+      seg_md5 = NULL;
+      len = 0;
     }
     dbg_print("[DBG] next segment from proxy file\n");
 #ifdef DEBUG
@@ -537,7 +549,7 @@ int dedup_layer_upload(char *fpath)
   struct cloudfs_seg *segs = NULL;
 
   retval = dedup_layer_segmentation(fpath, &num_seg, &segs);
-  dbg_print("[DBG] file %s segmented\n", fpath);
+  dbg_print("[DBG] file %s segmented to %d segments\n", fpath, num_seg);
 
   /* create a temporary proxy file to record the segments */
   char proxy_tmp[MAX_PATH_LEN] = "";

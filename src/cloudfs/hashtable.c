@@ -318,6 +318,7 @@ int ht_insert(struct cloudfs_seg *segp)
       dbg_print("[DBG] slot %d is available\n", i);
       slotp->ref_count = segp->ref_count;
       slotp->seg_size = segp->seg_size;
+      memset(slotp->md5, '\0', 2 * MD5_DIGEST_LENGTH + 1);
       memcpy(slotp->md5, segp->md5, 2 * MD5_DIGEST_LENGTH);
       msync(slotp, sizeof(struct cloudfs_seg), MS_SYNC);
       success = 1;
@@ -362,8 +363,9 @@ int ht_insert(struct cloudfs_seg *segp)
     }
     struct cloudfs_seg *slotp = (struct cloudfs_seg *)
       (Buckets[bucket_id] + sb.st_size / 2);
-    slotp->ref_count = segp->seg_size;
+    slotp->ref_count = segp->ref_count;
     slotp->seg_size = segp->seg_size;
+    memset(slotp->md5, '\0', 2 * MD5_DIGEST_LENGTH + 1);
     memcpy(slotp->md5, segp->md5, 2 * MD5_DIGEST_LENGTH);
     msync(slotp, sizeof(struct cloudfs_seg), MS_SYNC);
   }
