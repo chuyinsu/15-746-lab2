@@ -8,8 +8,8 @@
 #include <stdlib.h>
 #include <errno.h>
 
-#include "cloudapi.h"
 #include "cloudfs.h"
+#include "cloudapi.h"
 #include "hashtable.h"
 #include "dedup.h"
 #include "compress_layer.h"

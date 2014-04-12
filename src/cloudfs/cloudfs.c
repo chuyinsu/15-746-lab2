@@ -62,7 +62,7 @@
 #define TEMP_PATH ("/.tmp")
 
 /* log file path */
-#define LOG_FILE ("/tmp/cloudfs.log")
+#define LOG_FILE ("./cloudfs.log")
 
 /* hash table configurations */
 #define BKT_NUM (11) /* 11 buckets */

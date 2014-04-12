@@ -42,7 +42,7 @@ int compress_layer_download_seg(char *target_file, char *key)
   cloud_print_error();
   fclose(Tfile);
 
-  dbg_print("[DBG] segment downloaded to file %s\n", tpath);
+  dbg_print("[DBG] compressed segment downloaded to file %s\n", tpath);
 
   FILE *comp = fopen(tpath, "rb");
   FILE *decomp = fopen(target_file, "wb");
