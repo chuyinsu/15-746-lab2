@@ -95,7 +95,7 @@ static int stretch_bucket(char *bucket, int create)
   /* close the file */
   retval = close(fd);
   if (retval < 0) {
-    retval = cloudfs_error("add_slots - close");
+    retval = cloudfs_error("stretch_bucket - close");
     return retval;
   }
 
