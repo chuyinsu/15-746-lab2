@@ -12,23 +12,12 @@
 #include "cloudfs.h"
 #include "hashtable.h"
 #include "dedup.h"
+#include "compress_layer.h"
 
 #define BUF_LEN (1024)
 
 extern FILE *Log;
 static rabinpoly_t *rp;
-
-/* callback function for downloading from the cloud */
-static FILE *Tfile; /* temporary file */
-static int get_buffer(const char *buf, int len) {
-  return fwrite(buf, 1, len, Tfile);
-}
-
-/* callback function for uploading to the cloud */
-static FILE *Cfile; /* cloud file */
-static int put_buffer(char *buf, int len) {
-  return fread(buf, 1, len, Cfile);
-}
 
 void dedup_layer_get_key(unsigned char *md5, char *key);
 
@@ -211,10 +200,10 @@ int dedup_layer_read_seg(char *cache_dir, struct cloudfs_seg *segp, char *buf,
 
   if (access(tpath, F_OK) < 0) {
     dbg_print("[DBG] segment not found in cache directory\n");
-    Tfile = fopen(tpath, "wb");
-    cloud_get_object(BUCKET, segp->md5, get_buffer);
-    cloud_print_error();
-    fclose(Tfile);
+    retval = compress_layer_download_seg(tpath, segp->md5);
+    if (retval < 0) {
+      return retval;
+    }
     dbg_print("[DBG] segment downloaded from the cloud\n");
   }
 
@@ -290,11 +279,10 @@ static int dedup_layer_add_seg(struct cloudfs_seg *segp, char *fpath,
     dbg_print("[DBG] cloud key is %s\n", segp->md5);
 
     /* upload the segment */
-    Cfile = fopen(fpath, "rb");
-    fseek(Cfile, offset, SEEK_SET);
-    cloud_put_object(BUCKET, segp->md5, segp->seg_size, put_buffer);
-    cloud_print_error();
-    fclose(Cfile);
+    retval = compress_layer_upload_seg(fpath, offset, segp->md5, segp->seg_size);
+    if (retval < 0) {
+      return retval;
+    }
     dbg_print("[DBG] uploaded to the cloud\n");
 
     retval = ht_insert(segp);

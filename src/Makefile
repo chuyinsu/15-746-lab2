@@ -130,7 +130,8 @@ CLOUDFS_OBJS = $(BUILD)/obj/cloudfs.o \
 			   $(BUILD)/obj/cloudapi.o \
 			   $(BUILD)/obj/main.o \
 				 $(BUILD)/obj/hashtable.o \
-				 $(BUILD)/obj/dedup_layer.o
+				 $(BUILD)/obj/dedup_layer.o \
+				 $(BUILD)/obj/compress_layer.o
 #You can append other objects
 
 $(BUILD)/bin/cloudfs: $(CLOUDFS_OBJS)
