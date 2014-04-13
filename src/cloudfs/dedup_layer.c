@@ -17,7 +17,11 @@
 #define BUF_LEN (1024)
 
 extern FILE *Log;
-static rabinpoly_t *rp;
+static rabinpoly_t *Rp;
+static unsigned int Window_size;
+static unsigned int Avg_seg_size;
+static unsigned int Min_seg_size;
+static unsigned int Max_seg_size;
 
 void dedup_layer_get_key(unsigned char *md5, char *key);
 
@@ -89,6 +93,11 @@ static int dedup_layer_segmentation(char *fpath, int *num_seg,
   }
   dbg_print("[DBG] segmenting file %s\n", fpath);
 
+  Rp = rabin_init(Window_size, Avg_seg_size, Min_seg_size, Max_seg_size);
+  if (Rp == NULL) {
+    return -1;
+  }
+
   MD5_CTX ctx;
   unsigned char md5[MD5_DIGEST_LENGTH] = "";
   int new_segment = 0;
@@ -100,7 +109,7 @@ static int dedup_layer_segmentation(char *fpath, int *num_seg,
   MD5_Init(&ctx);
   while ((bytes = read(fd, buf, BUF_LEN)) > 0) {
     char *buftoread = (char *) buf;
-    while ((len = rabin_segment_next(rp, buftoread, bytes,
+    while ((len = rabin_segment_next(Rp, buftoread, bytes,
             &new_segment)) > 0) {
 
       MD5_Update(&ctx, buftoread, len);
@@ -142,6 +151,13 @@ static int dedup_layer_segmentation(char *fpath, int *num_seg,
     return retval;
   }
 
+  rabin_free(&Rp);
+
+  retval = close(fd);
+  if (retval < 0) {
+    retval = cloudfs_error("dedup_layer_segmentation");
+  }
+
   return retval;
 }
 
@@ -150,15 +166,14 @@ static int dedup_layer_segmentation(char *fpath, int *num_seg,
  * @param Parameters required to initialize Rabin Fingerprinting library.
  * @return 0 on success, -1 otherwise.
  */
-int dedup_layer_init(int window_size, int avg_seg_size, int min_seg_size,
-    int max_seg_size)
+void dedup_layer_init(unsigned int window_size, unsigned int avg_seg_size,
+    unsigned int min_seg_size, unsigned int max_seg_size)
 {
-  rp = rabin_init(window_size, avg_seg_size, min_seg_size, max_seg_size);
-  if (rp == NULL) {
-    return -1;
-  } else {
-    return 0;
-  }
+  Window_size = window_size;
+  Avg_seg_size = avg_seg_size;
+  Min_seg_size = min_seg_size;
+  Max_seg_size = max_seg_size;
+  dbg_print("[DBG] dedup_layer_init");
 }
 
 /**
@@ -167,7 +182,7 @@ int dedup_layer_init(int window_size, int avg_seg_size, int min_seg_size,
  */
 void dedup_layer_destroy(void)
 {
-  rabin_free(&rp);
+  dbg_print("[DBG] dedup_layer_destroy");
 }
 
 /**
@@ -217,6 +232,8 @@ int dedup_layer_read_seg(char *cache_dir, struct cloudfs_seg *segp, char *buf,
   if (retval < 0) {
     retval = cloudfs_error("dedup_layer_read_seg");
   }
+
+  close(fd);
 
   dbg_print("[DBG] dedup_layer_read_seg(cache_dir=\"%s\","
       " segp=0x%08x, buf=0x%08x, size=%d, offset=%ld)=%d\n",

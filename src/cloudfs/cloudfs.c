@@ -1280,11 +1280,8 @@ int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
       dbg_print("[ERR] failed to initialize hash table\n");
       exit(EXIT_FAILURE);
     }
-    if (dedup_layer_init(State_.rabin_window_size, State_.avg_seg_size,
-          State_.avg_seg_size / 2, State_.avg_seg_size * 2) < 0) {
-      dbg_print("[ERR] failed to initialize dedup layer\n");
-      exit(EXIT_FAILURE);
-    }
+    dedup_layer_init(State_.rabin_window_size, State_.avg_seg_size,
+        State_.avg_seg_size / 2, State_.avg_seg_size * 2);
   } else {
     dbg_print("[DBG] dedup disabled\n");
   }
