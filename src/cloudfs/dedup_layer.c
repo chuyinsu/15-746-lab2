@@ -322,8 +322,8 @@ static int dedup_layer_add_seg(struct cloudfs_seg *segp, char *fpath,
  * @brief Remove a segment from the cloud.
  *        If not found in hash table, return;
  *        If found in hash table:
- *          1) If ref_count > 1, decrease its ref_count by 1;
- *          2) Otherwise, decrease ref_count by 1 and delete from cloud.
+ *          1) Decrease its ref_count by 1;
+ *          2) If ref_count becomes 0, delete from cloud.
  * @param segp The segment to remove.
  * @return 0 on success, -errno otherwise.
  */

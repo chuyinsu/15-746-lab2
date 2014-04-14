@@ -297,7 +297,7 @@ int ht_insert(struct cloudfs_seg *segp)
 {
   int retval = 0;
   int bucket_id = 0;
-  int i = 0;
+  unsigned int i = 0;
   char bucket[MAX_PATH_LEN] = "";
 
   bucket_id = hash_value(segp->md5) % Bkt_num;
@@ -412,7 +412,7 @@ int ht_search(struct cloudfs_seg *segp, struct cloudfs_seg **found)
   print_seg(segp);
 #endif
 
-  int i = 0;
+  unsigned int i = 0;
   for (i = 0; i < sb.st_size / sizeof(struct cloudfs_seg); i++) {
     struct cloudfs_seg *slotp = (struct cloudfs_seg *)
       (Buckets[bucket_id] + i * sizeof(struct cloudfs_seg));

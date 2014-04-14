@@ -34,7 +34,7 @@
 #define UNUSED __attribute__((unused))
 
 /* to check error return of many function calls in a row,
- * such as in cloudfs_getattr(). */
+ * such as in cloudfs_getattr() */
 #define CK_ERR(f, m) \
   if ((f) < 0) { \
     retval = cloudfs_error(m); \
@@ -66,7 +66,6 @@
 
 /* hash table configurations */
 #define BKT_NUM (11) /* 11 buckets */
-
 /* each bucket holds 3 segments initially */
 #define BKT_SIZE (3 * sizeof(struct cloudfs_seg))
 
@@ -559,12 +558,12 @@ int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
       }
 
       /* keep track of the file position */
-      int seg_start_pos = 0;
-      int seg_end_pos = -1;
+      unsigned int seg_start_pos = 0;
+      unsigned int seg_end_pos = 0;
 
       /* calculate the span of the current segment that we need */
-      int seg_local_offset = 0;
-      int seg_local_size = 0;
+      unsigned int seg_local_offset = 0;
+      unsigned int seg_local_size = 0;
 
       /* keep track of how many data has been read */
       int filled = 0;
@@ -592,7 +591,9 @@ int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
 #endif
 
         /* the span of the current segment in the entire file */
-        seg_start_pos = seg_end_pos + 1;
+        if (seg_end_pos > 0) {
+          seg_start_pos = seg_end_pos + 1;
+        }
         seg_end_pos = seg_start_pos + seg.seg_size - 1;
         dbg_print("[DBG] this segment holds interval {%d, %d} of the file\n",
             seg_start_pos, seg_end_pos);
