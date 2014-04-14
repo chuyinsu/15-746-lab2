@@ -1,3 +1,9 @@
+/**
+ * @file dedup_layer.c
+ * @brief Dedup layer of CloudFS.
+ * @author Yinsu Chu (yinsuc)
+ */
+
 #define _GNU_SOURCE
 
 #include <stdio.h>
@@ -247,7 +253,7 @@ int dedup_layer_read_seg(char *cache_dir, struct cloudfs_seg *segp, char *buf,
  *        to character MD5 representation.
  * @param md5 The numeric MD5.
  * @param key The character MD5 is returned here. It should have at least
- *            MD5_DIGEST_LENGTH bytes.
+ *            2 * MD5_DIGEST_LENGTH + 1 bytes.
  * @return Void.
  */
 void dedup_layer_get_key(unsigned char *md5, char *key)
@@ -296,7 +302,8 @@ static int dedup_layer_add_seg(struct cloudfs_seg *segp, char *fpath,
     dbg_print("[DBG] cloud key is %s\n", segp->md5);
 
     /* upload the segment */
-    retval = compress_layer_upload_seg(fpath, offset, segp->md5, segp->seg_size);
+    retval =
+      compress_layer_upload_seg(fpath, offset, segp->md5, segp->seg_size);
     if (retval < 0) {
       return retval;
     }
@@ -315,8 +322,8 @@ static int dedup_layer_add_seg(struct cloudfs_seg *segp, char *fpath,
  * @brief Remove a segment from the cloud.
  *        If not found in hash table, return;
  *        If found in hash table:
- *          1) If ref_count > 1, only decrease its ref_count by 1;
- *          2) Otherwise, delete from cloud.
+ *          1) If ref_count > 1, decrease its ref_count by 1;
+ *          2) Otherwise, decrease ref_count by 1 and delete from cloud.
  * @param segp The segment to remove.
  * @return 0 on success, -errno otherwise.
  */
@@ -417,9 +424,7 @@ int dedup_layer_remove(char *fpath)
 
 /**
  * @brief Upload a big file into the cloud.
- *        This function uses the provided Rabin Fingerprinting library
- *        to calculate segments of a file and then upload them. It also
- *        updates the original file to be a proxy file.
+ *        It also updates the original file to be a proxy file.
  * @param fpath Pathname of the file.
  * @return 0 on success, -errno otherwise.
  */

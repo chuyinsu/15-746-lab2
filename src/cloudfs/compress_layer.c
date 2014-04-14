@@ -1,3 +1,10 @@
+/**
+ * @file compress_layer.c
+ * @brief The compress layer of CloudFS.
+ *        Reference: compress-example.c in the provided code.
+ * @author Yinsu Chu (yinsuc)
+ */
+
 #include <stdio.h>
 
 #include "cloudfs.h"

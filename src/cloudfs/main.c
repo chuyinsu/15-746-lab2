@@ -1,10 +1,15 @@
+/**
+ * @file main.c
+ * @brief Entry point for CloudFS.
+ *        Modified by Yinsu Chu (yinsuc)
+ */
+
 #include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include "cloudfs.h"
-
 
 static void usageExit(FILE *out)
 {
@@ -18,7 +23,8 @@ static void usageExit(FILE *out)
       "   -a/--ssd-size        :  The size of SSD disk(in KB)\n"
       "   -t/--threshold       :  The maximum size of files in SSD(in KB)\n"
       "   -/--no-dedup        :  Turn off deduplication\n"
-      "   -/--avg-seg-size    :  Desired average segment size for deduplication(in KB)\n"
+      "   -/--avg-seg-size    :  "
+      "Desired average segment size for deduplication(in KB)\n"
       "   -/--rabin-window-size: Size of the internal rolling window used for"
       "                           calculating Rabin fingerprint(in bytes)\n"
       "   -/--no-cache        :  Turn off the file cache\n"

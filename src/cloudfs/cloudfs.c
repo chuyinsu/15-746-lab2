@@ -169,21 +169,9 @@ int cloudfs_upgrade_attr(struct stat *sp, char *fpath, attr_flag_t flag)
 }
 
 /**
- * @brief Get the full path of a cloud file's temporary directory/file.
- *        Each cloud file has a directory on local SSD, where its
- *        segments are temporarily placed here (e.g. when some part
- *        of this file is read). However, when this file is written,
- *        this temporary directory will be gone since only a temporary
- *        file is needed now - their names are the same though.
- *        For example, there is a file /mnt/fuse/big_file whose content
- *        is in the cloud. If this file is read, some segments are downloaded
- *        to /mnt/fuse/.tmp/+mnt+fuse+big_file/seg1, seg2..., here,
- *        +mnt+fuse+big_file is the temporary directory; once the file is
- *        being written, all of its original content is truncated, so
- *        we only need a temporary file instead a folder to store the new
- *        content.
+ * @brief Get the full path of a cloud file's temporary directory.
  * @param fpath The full path of the proxy file.
- * @param tpath The generated path of the temporary directory/file on SSD.
+ * @param tpath The generated path of the temporary directory on SSD.
  * @return Void.
  */
 void cloudfs_get_temppath(const char *fpath, char *tpath)
@@ -197,12 +185,12 @@ void cloudfs_get_temppath(const char *fpath, char *tpath)
 }
 
 /**
- * @brief Convert full path on SSD to temporary directory/file name on SSD.
+ * @brief Convert full path on SSD to temporary directory name on SSD.
  *        Simple strategy: use the full path, replace all illegal characters.
  *        This function got its name in Part 1, but now it does not generate
  *        keys for the cloud storage.
  * @param fpath Pathname of the file.
- * @param key The corresponding temporary directory/file on SSD. It should have
+ * @param key The corresponding temporary directory on SSD. It should have
  *            at least MAX_PATH_LEN byte space.
  * @return Void.
  */
@@ -749,7 +737,7 @@ int cloudfs_rmdir_rec(char *path)
  *          - If its size has exceeded the threshold, move it to the cloud;
  *        For files stored in the cloud:
  *          - If file is not dirty,
- *            just delete the temporary segments/file.
+ *            just delete the temporary segments.
  *          - If file is dirty:
  *            1) If its size shrinks below the threshold, move it back to SSD;
  *            2) Otherwise, replace the new version to the cloud;

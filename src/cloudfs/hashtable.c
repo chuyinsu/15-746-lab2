@@ -1,12 +1,20 @@
 /**
  * @file hashtable.c
- * @brief A persistent hash table implementation. Each bucket in the hash table
- *        is a file, and all buckets are mmap-ed upon file system starting.
+ * @brief A persistent hash table implementation.
+ *
+ *        For a separate-chaining design, usually there is an array where each
+ *        element in the array is a linked-list. I'll call an element of the
+ *        array "bucket" and an element of the linked-list "slot".
+ *
+ *        Each bucket in the hash table is a file, and all buckets are mmap-ed
+ *        upon file system starting.
+ *        
  *        Any changes to the hash table is made first in the memory region
  *        of the file and then msync-ed to disk. Inside each bucket, there are
  *        multiple slots where one slot can hold one cloudfs_seg structure.
  *        When all slots in a bucket are used up, this bucket will be enlarged
  *        to be twice the previous size.
+ *
  * @author Yinsu Chu (yinsuc)
  */
 
@@ -187,7 +195,6 @@ static int add_slots(char *bucket, int all)
  *                 to /mnt/ssd/tmp/bucket9.
  * @param bkt_num Number of bucket files.
  * @param bkt_size Default size of each bucket file in bytes.
- * @param log The log file passed from CloudFS.
  * @return 0 on success, -errno otherwise.
  */
 int ht_init(char *bkt_prfx, int bkt_num, int bkt_size)
