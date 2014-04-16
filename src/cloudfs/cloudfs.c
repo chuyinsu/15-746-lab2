@@ -136,22 +136,20 @@ int cloudfs_upgrade_attr(struct stat *sp, char *fpath, attr_flag_t flag)
   print_stat(sp);
 #endif
 
-  if (flag == CREATE) {
-    CK_ERR(lsetxattr(fpath, U_DEV, &sp->st_dev, sizeof(dev_t), 0), fn);
-    CK_ERR(lsetxattr(fpath, U_INO, &sp->st_ino, sizeof(ino_t), 0), fn);
-    CK_ERR(lsetxattr(fpath, U_MODE, &sp->st_mode, sizeof(mode_t), 0), fn);
-    CK_ERR(lsetxattr(fpath, U_NLINK, &sp->st_nlink, sizeof(nlink_t), 0), fn);
-    CK_ERR(lsetxattr(fpath, U_UID, &sp->st_uid, sizeof(uid_t), 0), fn);
-    CK_ERR(lsetxattr(fpath, U_GID, &sp->st_gid, sizeof(gid_t), 0), fn);
-    CK_ERR(lsetxattr(fpath, U_RDEV, &sp->st_rdev, sizeof(dev_t), 0), fn);
-    CK_ERR(lsetxattr(fpath, U_BLKSIZE, &sp->st_blksize, sizeof(blksize_t), 0),
-        fn);
+  CK_ERR(lsetxattr(fpath, U_DEV, &sp->st_dev, sizeof(dev_t), 0), fn);
+  CK_ERR(lsetxattr(fpath, U_INO, &sp->st_ino, sizeof(ino_t), 0), fn);
+  CK_ERR(lsetxattr(fpath, U_MODE, &sp->st_mode, sizeof(mode_t), 0), fn);
+  CK_ERR(lsetxattr(fpath, U_NLINK, &sp->st_nlink, sizeof(nlink_t), 0), fn);
+  CK_ERR(lsetxattr(fpath, U_UID, &sp->st_uid, sizeof(uid_t), 0), fn);
+  CK_ERR(lsetxattr(fpath, U_GID, &sp->st_gid, sizeof(gid_t), 0), fn);
+  CK_ERR(lsetxattr(fpath, U_RDEV, &sp->st_rdev, sizeof(dev_t), 0), fn);
+  CK_ERR(lsetxattr(fpath, U_BLKSIZE, &sp->st_blksize, sizeof(blksize_t), 0),
+      fn);
 
-    /* according to the test cases, these times should not be updated */
-    //CK_ERR(lsetxattr(fpath, U_ATIME, &sp->st_atime, sizeof(time_t), 0), fn);
-    //CK_ERR(lsetxattr(fpath, U_MTIME, &sp->st_mtime, sizeof(time_t), 0), fn);
-    //CK_ERR(lsetxattr(fpath, U_CTIME, &sp->st_ctime, sizeof(time_t), 0), fn);
-  }
+  /* according to the test cases, these times should not be updated */
+  //CK_ERR(lsetxattr(fpath, U_ATIME, &sp->st_atime, sizeof(time_t), 0), fn);
+  //CK_ERR(lsetxattr(fpath, U_MTIME, &sp->st_mtime, sizeof(time_t), 0), fn);
+  //CK_ERR(lsetxattr(fpath, U_CTIME, &sp->st_ctime, sizeof(time_t), 0), fn);
 
   CK_ERR(lsetxattr(fpath, U_SIZE, &sp->st_size, sizeof(off_t), 0), fn);
   CK_ERR(lsetxattr(fpath, U_BLOCKS , &sp->st_blocks, sizeof(blkcnt_t), 0), fn);
@@ -463,7 +461,7 @@ int cloudfs_open(const char *path, struct fuse_file_info *fi)
       fd = open(tpath, O_RDWR);
     } else {
       /* create the temporary directory for the file */
-      retval = mkdir(tpath, DEFAULT_MODE);
+      retval = mkdir(tpath, DEFAULT_DIR_MODE);
       if (retval < 0) {
         retval = cloudfs_error("cloudfs_open");
         return retval;
@@ -473,7 +471,7 @@ int cloudfs_open(const char *path, struct fuse_file_info *fi)
       sprintf(tpath, "%s%s", tpath, "/new_content");
       dbg_print("[DBG] dedup is enabled, creating temporary file %s\n", tpath);
 
-      fd = open(tpath, O_RDWR | O_CREAT, DEFAULT_MODE);
+      fd = open(tpath, O_RDWR | O_CREAT, DEFAULT_FILE_MODE);
       if (fd < 0) {
         retval = cloudfs_error("cloudfs_open");
         return retval;
@@ -852,6 +850,13 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
           cloud_put_object(BUCKET, key, sb.st_size, put_buffer);
           cloud_print_error();
           fclose(Cfile);
+
+          /* remove the temporary file on SSD */
+          retval = remove(tpath);
+          if (retval < 0) {
+            retval = cloudfs_error("cloudfs_release");
+            return retval;
+          }
         } else {
           /* replace the old version in the cloud */
           retval = dedup_layer_remove(fpath);
@@ -872,14 +877,6 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
         /* update attributes */
         cloudfs_upgrade_attr(&sb, fpath, UPDATE);
       }
-
-      /* remove the temporary file on SSD */
-      retval = remove(tpath);
-      if (retval < 0) {
-        retval = cloudfs_error("cloudfs_release");
-        return retval;
-      }
-
     } else {
       /* file content not changed */
       dbg_print("[DBG] file is not dirty\n");
@@ -1238,7 +1235,7 @@ int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
   memset(Temp_path, '\0', MAX_PATH_LEN);
   snprintf(Temp_path, MAX_PATH_LEN, "%s%s", State_.ssd_path, TEMP_PATH);
   dbg_print("[DBG] Temp_path=\"%s\"\n", Temp_path);
-  if (mkdir(Temp_path, DEFAULT_MODE) < 0) {
+  if (mkdir(Temp_path, DEFAULT_DIR_MODE) < 0) {
     if (errno != EEXIST) {
       dbg_print("[ERR] failed to create .tmp directory\n");
       exit(EXIT_FAILURE);

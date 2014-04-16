@@ -63,7 +63,7 @@ static int stretch_bucket(char *bucket, int create)
   /* create or open the bucket file */
   int fd = 0;
   if (create) {
-    fd = open(bucket, O_RDWR | O_CREAT | O_EXCL, DEFAULT_MODE);
+    fd = open(bucket, O_RDWR | O_CREAT | O_EXCL, DEFAULT_FILE_MODE);
   } else {
     fd = open(bucket, O_RDWR);
   }
