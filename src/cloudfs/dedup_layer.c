@@ -179,7 +179,7 @@ void dedup_layer_init(unsigned int window_size, unsigned int avg_seg_size,
   Avg_seg_size = avg_seg_size;
   Min_seg_size = min_seg_size;
   Max_seg_size = max_seg_size;
-  dbg_print("[DBG] dedup_layer_init");
+  dbg_print("[DBG] dedup_layer_init()\n");
 }
 
 /**
@@ -188,7 +188,7 @@ void dedup_layer_init(unsigned int window_size, unsigned int avg_seg_size,
  */
 void dedup_layer_destroy(void)
 {
-  dbg_print("[DBG] dedup_layer_destroy");
+  dbg_print("[DBG] dedup_layer_destroy()\n");
 }
 
 /**

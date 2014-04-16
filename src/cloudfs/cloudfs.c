@@ -61,6 +61,9 @@
 /* temporary path for CloudFS */
 #define TEMP_PATH ("/.tmp")
 
+/* cache path for CloudFS */
+#define CACHE_PATH ("/.cache")
+
 /* log file path */
 #define LOG_FILE ("./cloudfs.log")
 
@@ -72,6 +75,7 @@
 FILE *Log;
 static struct cloudfs_state State_;
 static char Temp_path[MAX_PATH_LEN];
+static char Cache_path[MAX_PATH_LEN];
 static char Bkt_prfx[MAX_PATH_LEN];
 
 /* callback function for downloading from the cloud */
@@ -1258,6 +1262,22 @@ int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
     }
     dedup_layer_init(State_.rabin_window_size, State_.avg_seg_size,
         State_.avg_seg_size / 2, State_.avg_seg_size * 2);
+    if (!State_.no_cache) {
+      dbg_print("[DBG] cache enabled\n");
+
+      /* initialize .cache directory */
+      memset(Cache_path, '\0', MAX_PATH_LEN);
+      snprintf(Cache_path, MAX_PATH_LEN, "%s%s", State_.ssd_path, CACHE_PATH);
+      dbg_print("[DBG] Cache_path=\"%s\"\n", Cache_path);
+      if (mkdir(Cache_path, DEFAULT_DIR_MODE) < 0) {
+        if (errno != EEXIST) {
+          dbg_print("[ERR] failed to create .cache directory\n");
+          exit(EXIT_FAILURE);
+        }
+      }
+    } else {
+      dbg_print("[DBG] cache disabled\n");
+    }
   } else {
     dbg_print("[DBG] dedup disabled\n");
   }

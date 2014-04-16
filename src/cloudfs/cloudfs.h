@@ -35,7 +35,7 @@ int cloudfs_error(char *error_str);
 
 /* a simple debugging utility,
  * uncomment the next line to log debugging information */
-//#define DEBUG
+#define DEBUG
 #ifdef DEBUG
 # define dbg_print(...) fprintf(Log, __VA_ARGS__)
 #else
