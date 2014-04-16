@@ -69,12 +69,6 @@
 /* each bucket holds 3 segments initially */
 #define BKT_SIZE (3 * sizeof(struct cloudfs_seg))
 
-/* flags used when updating file attributes */
-typedef enum {
-  CREATE,
-  UPDATE
-} attr_flag_t;
-
 FILE *Log;
 static struct cloudfs_state State_;
 static char Temp_path[MAX_PATH_LEN];
@@ -119,19 +113,15 @@ void print_stat(const struct stat *sb)
  * @brief Update the attributes of a proxy file.
  * @param sp Pointer to the real attribute values.
  * @param fpath Pathname of the proxy file.
- * @param flag To control which attributes need to be updated.
- *             Some attributes, such as st_ino, should only be updated
- *             the first time when the file is migrated to the cloud;
- *             which others, such as st_size, always need to be updated.
  * @return 0 on success, -errno otherwise.
  */
-int cloudfs_upgrade_attr(struct stat *sp, char *fpath, attr_flag_t flag)
+int cloudfs_upgrade_attr(struct stat *sp, char *fpath)
 {
   int retval = 0;
   char *fn = "cloudfs_upgrade_attr";
 
-  dbg_print("[DBG] cloudfs_upgrade_attr(sp=0x%08x, fpath=\"%s\", flag=%d)\n",
-      (unsigned int) sp, fpath, flag);
+  dbg_print("[DBG] cloudfs_upgrade_attr(sp=0x%08x, fpath=\"%s\")\n",
+      (unsigned int) sp, fpath);
 #ifdef DEBUG
   print_stat(sp);
 #endif
@@ -159,8 +149,8 @@ int cloudfs_upgrade_attr(struct stat *sp, char *fpath, attr_flag_t flag)
   int dirty = 0;
   CK_ERR(lsetxattr(fpath, U_DIRTY, &dirty, sizeof(int), 0), fn);
 
-  dbg_print("[DBG] cloudfs_upgrade_attr(sp=0x%08x, fpath=\"%s\", flag=%d)=%d\n",
-      (unsigned int) sp, fpath, flag, retval);
+  dbg_print("[DBG] cloudfs_upgrade_attr(sp=0x%08x, fpath=\"%s\")=%d\n",
+      (unsigned int) sp, fpath, retval);
 
   return retval;
 }
@@ -875,7 +865,7 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
         }
 
         /* update attributes */
-        cloudfs_upgrade_attr(&sb, fpath, UPDATE);
+        cloudfs_upgrade_attr(&sb, fpath);
       }
     } else {
       /* file content not changed */
@@ -934,7 +924,7 @@ int cloudfs_release(const char *path, struct fuse_file_info *fi)
       }
 
       /* update attributes */
-      cloudfs_upgrade_attr(&sb, fpath, CREATE);
+      cloudfs_upgrade_attr(&sb, fpath);
     }
   }
 
