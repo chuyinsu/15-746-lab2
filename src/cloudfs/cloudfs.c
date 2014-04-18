@@ -669,9 +669,9 @@ int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
 
 /**
  * @brief Write data to an opened file.
- *        The underlying file descriptor has already been
- *        saved in "fi", so here we can directly use it.
- *        Also we need to set "user.dirty" if this file is stored in cloud.
+ *        If the file is not marked dirty, it has not been written before.
+ *        Then download all of its content and save the file handle.
+ *        Otherwise (marked dirty), directly write to the file handle in fi->fh.
  * @param path Pathname of the file to write.
  * @param buf The content to write.
  * @param size Size of the content buffer.
@@ -684,11 +684,69 @@ int cloudfs_write(const char *path, const char *buf, size_t size, off_t offset,
 {
   int retval = 0;
   char fpath[MAX_PATH_LEN] = "";
+  char tpath_dir[MAX_PATH_LEN] = "";
+  char tpath[MAX_PATH_LEN] = "";
   cloudfs_get_fullpath(path, fpath);
 
-  if (cloudfs_is_in_cloud(fpath)) {
-    int dirty = 1;
-    lsetxattr(fpath, U_DIRTY, &dirty, sizeof(int), 0);
+  if (cloudfs_is_in_cloud(fpath) && (!State_.no_dedup)) {
+    cloudfs_get_temppath(fpath, tpath_dir);
+    sprintf(tpath, "%s%s", tpath_dir, "/new_content");
+    dbg_print("[DBG] temporary directory is %s\n", tpath_dir);
+    dbg_print("[DBG] temporary file is %s\n", tpath);
+
+    /* get dirty attribute */
+    int dirty = 0;
+    retval = lgetxattr(fpath, U_DIRTY, &dirty, sizeof(int));
+    if (retval < 0) {
+      retval = cloudfs_error("cloudfs_write");
+      return retval;
+    }
+
+    if (!dirty) {
+      dirty = 1;
+      lsetxattr(fpath, U_DIRTY, &dirty, sizeof(int), 0);
+
+      /* open temporary file to get all content */
+      FILE *t_fp = fopen(tpath, "ab");
+
+      /* these are parameters required by the getline() function */
+      char *seg_md5 = NULL;
+      size_t len = 0;
+      FILE *proxy_fp = fopen(fpath, "rb");
+      if (proxy_fp == NULL) {
+        retval = cloudfs_error("cloudfs_write");
+        return retval;
+      }
+
+      /* iterate through all the segments */
+      while ((retval = getline(&seg_md5, &len, proxy_fp)) != -1) {
+        /* build the segment structure */
+        struct cloudfs_seg seg;
+        seg.ref_count = 0;
+        seg.seg_size =
+          (int) strtol(seg_md5 + 2 * MD5_DIGEST_LENGTH + 1, NULL, 10);
+        memset(seg.md5, '\0', 2 * MD5_DIGEST_LENGTH + 1);
+        memcpy(seg.md5, seg_md5, 2 * MD5_DIGEST_LENGTH);
+        if (seg_md5 != NULL) {
+          free(seg_md5);
+          seg_md5 = NULL;
+          len = 0;
+        }
+        dbg_print("[DBG] next segment from proxy file\n");
+#ifdef DEBUG
+        print_seg(&seg);
+#endif
+        char seg_buf[seg.seg_size];
+        retval =
+          dedup_layer_read_seg(tpath_dir, &seg, seg_buf, seg.seg_size, 0);
+        if (retval < 0) {
+          return retval;
+        }
+        dbg_print("[DBG] writing %d bytes to %s\n", retval, tpath);
+        fwrite(seg_buf, sizeof(char), retval, t_fp);
+      }
+      fclose(t_fp);
+    }
   }
 
   retval = pwrite(fi->fh, buf, size, offset);
