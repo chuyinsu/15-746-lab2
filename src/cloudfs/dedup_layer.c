@@ -18,7 +18,7 @@
 #include "cloudapi.h"
 #include "hashtable.h"
 #include "dedup.h"
-#include "compress_layer.h"
+#include "cache_layer.h"
 
 #define BUF_LEN (1024)
 
@@ -200,7 +200,7 @@ void dedup_layer_destroy(void)
  *        cache directory to see whether the segment has already
  *        been downloaded; if not, it downloads the segment;
  *        then it reads the segment.
- * @param cache_dir The temporary directory to save segments. Its
+ * @param temp_dir The temporary directory to save segments. Its
  *                  size should be MAX_PATH_LEN.
  * @param segp The segment to read.
  * @param buf The buffer to hold the returned data.
@@ -208,7 +208,7 @@ void dedup_layer_destroy(void)
  * @param offset The offset into the segment to start reading.
  * @return Size read on success, -errno otherwise.
  */
-int dedup_layer_read_seg(char *cache_dir, struct cloudfs_seg *segp, char *buf,
+int dedup_layer_read_seg(char *temp_dir, struct cloudfs_seg *segp, char *buf,
     int size, long offset)
 {
   int retval = 0;
@@ -216,12 +216,12 @@ int dedup_layer_read_seg(char *cache_dir, struct cloudfs_seg *segp, char *buf,
   dbg_print("[DBG] cloud key is %s\n", segp->md5);
 
   char tpath[MAX_PATH_LEN] = "";
-  snprintf(tpath, MAX_PATH_LEN, "%s/%s", cache_dir, segp->md5);
+  snprintf(tpath, MAX_PATH_LEN, "%s/%s", temp_dir, segp->md5);
   dbg_print("[DBG] local file path %s\n", tpath);
 
   if (access(tpath, F_OK) < 0) {
     dbg_print("[DBG] segment not found in cache directory\n");
-    retval = compress_layer_download_seg(tpath, segp->md5);
+    retval = cache_layer_download_seg(tpath, segp->md5);
     if (retval < 0) {
       return retval;
     }
@@ -241,9 +241,9 @@ int dedup_layer_read_seg(char *cache_dir, struct cloudfs_seg *segp, char *buf,
 
   close(fd);
 
-  dbg_print("[DBG] dedup_layer_read_seg(cache_dir=\"%s\","
+  dbg_print("[DBG] dedup_layer_read_seg(temp_dir=\"%s\","
       " segp=0x%08x, buf=0x%08x, size=%d, offset=%ld)=%d\n",
-      cache_dir, (unsigned int) segp, (unsigned int) buf, size, offset, retval);
+      temp_dir, (unsigned int) segp, (unsigned int) buf, size, offset, retval);
 
   return retval;
 }
@@ -302,8 +302,7 @@ static int dedup_layer_add_seg(struct cloudfs_seg *segp, char *fpath,
     dbg_print("[DBG] cloud key is %s\n", segp->md5);
 
     /* upload the segment */
-    retval =
-      compress_layer_upload_seg(fpath, offset, segp->md5, segp->seg_size);
+    retval = cache_layer_upload_seg(fpath, offset, segp->md5, segp->seg_size);
     if (retval < 0) {
       return retval;
     }
@@ -345,8 +344,7 @@ static int dedup_layer_remove_seg(struct cloudfs_seg *segp)
     (found->ref_count)--;
     ht_sync(found);
     if (found->ref_count == 0) {
-      cloud_delete_object(BUCKET, segp->md5);
-      cloud_print_error();
+      cache_layer_remove_seg(segp->md5);
     }
   } else {
     dbg_print("[DBG] segment to remove not found in hash table\n");
