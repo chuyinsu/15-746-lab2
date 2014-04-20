@@ -5,12 +5,12 @@
  */
 
 #include <stdio.h>
+#include <unistd.h>
+#include <sys/stat.h>
 
 #include "cloudfs.h"
 #include "cloudapi.h"
 #include "compress_layer.h"
-
-#define BYTES_PER_KB (1024)
 
 extern FILE *Log;
 extern char Cache_path[MAX_PATH_LEN];
@@ -30,13 +30,13 @@ static int put_buffer(char *buf, int len) {
  * @param space The --cache-size argument passed to CloudFS.
  * @return 0 on success (always 0 for now).
  */
-int cache_layer_init(int space)
+int cache_layer_init(int total_space, int init_space)
 {
-  Total_space = space * BYTES_PER_KB;
-  Remaining_space = space * BYTES_PER_KB;
+  Total_space = total_space;
+  Remaining_space = total_space - init_space;
 
-  dbg_print("[DBG] cache_layer_init(), total %ld bytes, remaining %ld bytes\n",
-      Total_space, Remaining_space);
+  dbg_print("[DBG] cache_layer_init(), total %ld bytes, used %d bytes,"
+      " remaining %ld bytes\n", Total_space, init_space, Remaining_space);
 
   return 0;
 }
@@ -45,9 +45,11 @@ int cache_layer_init(int space)
  * @brief Download a segment through the cache layer.
  *        This function will first search for the segment in the cache.
  *        If found, copy directly from the cache directory.
- *        If not found, start cache eviction policy:
- *          1) If can make room for the segment, download to cache.
- *          2) Otherwise download directly from the cloud.
+ *        If not found:
+ *          1) If cache directory has enough space, download to cache.
+ *          2) Otherwise, start cache eviction policy:
+ *            1) If can make room for the segment, download to cache.
+ *            2) Otherwise download directly from the cloud.
  * @param target_file Local pathname of the file to download to.
  * @param key The key of the cloud file. It should have
  *            MD5_DIGEST_LENGTH bytes.
@@ -55,9 +57,24 @@ int cache_layer_init(int space)
  */
 int cache_layer_download_seg(char *target_file, char *key)
 {
-  (void) target_file;
-  (void) key;
-  return 0;
+  int retval = 0;
+
+  char cache_file[MAX_PATH_LEN] = "";
+  sprintf(cache_file, "%s/%s", Cache_path, key);
+  dbg_print("[DBG] download segment through the cache layer: %s\n", cache_file);
+
+  if (access(cache_file, F_OK) < 0) {
+    dbg_print("[DBG] segment not found in cache\n");
+    retval = compress_layer_download_seg(target_file, key);
+  } else {
+    dbg_print("[DBG] segment found in cache\n");
+    retval = compress_layer_decompress(cache_file, target_file);
+  }
+
+  dbg_print("[DBG] cache_layer_download_seg(target_file=\"%s\","
+      " key=\"%s\")=%d\n", target_file, key, retval);
+
+  return retval;
 }
 
 /**
@@ -101,7 +118,10 @@ int cache_layer_upload_seg(char *fpath, long offset, char *key, long len)
       return retval;
     }
   } else {
+    dbg_print("[DBG] remaining space is %ld, enough to hold the segment\n",
+        Remaining_space);
     Remaining_space -= len_compressed_file;
+    dbg_print("[DBG] remaining space decreased to %ld\n", Remaining_space);
   }
 
   dbg_print("[DBG] cache_layer_upload_seg(fpath=\"%s\", offset=%ld, key=\"%s\","
@@ -119,7 +139,35 @@ int cache_layer_upload_seg(char *fpath, long offset, char *key, long len)
  */
 int cache_layer_remove_seg(char *key)
 {
-  (void) key;
-  return 0;
+  int retval = 0;
+
+  char cache_file[MAX_PATH_LEN] = "";
+  sprintf(cache_file, "%s/%s", Cache_path, key);
+  dbg_print("[DBG] remove segment through the cache layer: %s\n", cache_file);
+
+  if (access(cache_file, F_OK) < 0) {
+    cloud_delete_object(BUCKET, key);
+    cloud_print_error();
+    dbg_print("[DBG] segment not found in cache\n");
+  } else {
+    dbg_print("[DBG] segment found in cache\n");
+    struct stat sb;
+    retval = lstat(cache_file, &sb);
+    if (retval < 0) {
+      retval = cloudfs_error("cache_layer_remove_seg");
+      return retval;
+    }
+    retval = remove(cache_file);
+    if (retval < 0) {
+      retval = cloudfs_error("cache_layer_remove_seg");
+      return retval;
+    }
+    Remaining_space += sb.st_size;
+    dbg_print("[DBG] remaining space increased to %ld\n", Remaining_space);
+  }
+
+  dbg_print("[DBG] cache_layer_remove_seg(key=\"%s\")=%d", key, retval);
+
+  return retval;
 }
 

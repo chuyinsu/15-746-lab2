@@ -29,6 +29,35 @@ static int put_buffer(char *buf, int len) {
 }
 
 /**
+ * @brief Decompress a file to the target file.
+ * @param fpath Pathname of the compressed file.
+ * @param target_file Pathname of the file to store the result.
+ * @return 0 on success, negative otherwise.
+ */
+int compress_layer_decompress(char *fpath, char *target_file)
+{
+  int retval = 0;
+
+  FILE *comp = fopen(fpath, "rb");
+  FILE *decomp = fopen(target_file, "wb");
+  if (comp == NULL || decomp == NULL) {
+    retval = cloudfs_error("compress_layer_decompress");
+    return retval;
+  }
+
+  retval = inf(comp, decomp);
+  if (retval < 0) {
+    dbg_print("[ERR] failed to decompress %s\n", fpath);
+    return retval;
+  }
+
+  fclose(comp);
+  fclose(decomp);
+
+  return retval;
+}
+
+/**
  * @brief Download from the cloud according to the key,
  *        and de-compress into "target_file".
  * @param target_file Pathname of the file to de-compress into.
@@ -51,21 +80,10 @@ int compress_layer_download_seg(char *target_file, char *key)
 
   dbg_print("[DBG] compressed segment downloaded to file %s\n", tpath);
 
-  FILE *comp = fopen(tpath, "rb");
-  FILE *decomp = fopen(target_file, "wb");
-  if (comp == NULL || decomp == NULL) {
-    retval = cloudfs_error("compress_layer_download_seg");
-    return retval;
-  }
-
-  retval = inf(comp, decomp);
+  retval = compress_layer_decompress(tpath, target_file);
   if (retval < 0) {
-    dbg_print("[ERR] failed to de-compress\n");
     return retval;
   }
-
-  fclose(comp);
-  fclose(decomp);
 
   retval = remove(tpath);
   if (retval < 0) {

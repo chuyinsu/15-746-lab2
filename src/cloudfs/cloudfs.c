@@ -24,6 +24,7 @@
 #include <sys/xattr.h>
 #include <time.h>
 #include <unistd.h>
+#include <ftw.h>
 #include "cloudapi.h"
 #include "cloudfs.h"
 #include "dedup.h"
@@ -78,6 +79,7 @@ char Cache_path[MAX_PATH_LEN];
 static struct cloudfs_state State_;
 static char Temp_path[MAX_PATH_LEN];
 static char Bkt_prfx[MAX_PATH_LEN];
+static int Cache_init_size;
 
 /* callback function for downloading from the cloud */
 static FILE *Tfile; /* temporary file */
@@ -1258,7 +1260,26 @@ static struct fuse_operations Cloudfs_operations = {
   .rmdir          = cloudfs_rmdir
 };
 
-int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
+/**
+ * @brief A helper function for ftw to calculate total size of cache directory.
+ *        This is called upon start of CloudFS if .cache dir already exists.
+ * @param See "man ftw".
+ * @return 0.
+ */
+static int sum_cache(const char *fpath, const struct stat *sb,
+    int typeflag UNUSED)
+{
+  dbg_print("[DBG] scanning cache directory: %s\n", fpath);
+  if ((strcmp(fpath, ".") != 0) && (strcmp(fpath, "..") != 0)) {
+    dbg_print("[DBG] cache file found: %s\n", fpath);
+    Cache_init_size += (sb->st_size);
+    dbg_print("[DBG] cache initial size increased to %d\n", Cache_init_size);
+  }
+  return 0;
+}
+
+int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name)
+{
   int argc = 0;
   char *argv[10];
 
@@ -1314,6 +1335,7 @@ int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
   dbg_print("[DBG] Bkt_prfx=\"%s\"\n", Bkt_prfx);
 
   /* initialize .cache directory */
+  Cache_init_size = 0;
   memset(Cache_path, '\0', MAX_PATH_LEN);
   snprintf(Cache_path, MAX_PATH_LEN, "%s%s", State_.ssd_path, CACHE_PATH);
   dbg_print("[DBG] Cache_path=\"%s\"\n", Cache_path);
@@ -1321,10 +1343,15 @@ int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
     if (errno != EEXIST) {
       dbg_print("[ERR] failed to create .cache directory\n");
       exit(EXIT_FAILURE);
+    } else {
+      dbg_print("[DBG] cache directory exists, collecting information\n");
+      if (ftw(Cache_path, &sum_cache, 1) < 0) {
+        dbg_print("[ERR] failed to calculate cache initial size\n");
+        exit(EXIT_FAILURE);
+      }
     }
   }
 
-  State_.no_cache = 1;
   if (!State_.no_dedup) {
     dbg_print("[DBG] dedup enabled\n");
     if (ht_init(Bkt_prfx, BKT_NUM, BKT_SIZE) < 0) {
@@ -1335,10 +1362,10 @@ int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
         State_.avg_seg_size / 2, State_.avg_seg_size * 2, State_.no_cache);
     if (!State_.no_cache) {
       dbg_print("[DBG] cache enabled\n");
-      dbg_print("[DBG] cache size %d KB\n", State_.cache_size);
+      dbg_print("[DBG] cache size %d bytes\n", State_.cache_size);
 
       /* initialize the cache layer */
-      cache_layer_init(State_.cache_size);
+      cache_layer_init(State_.cache_size, Cache_init_size);
     } else {
       dbg_print("[DBG] cache disabled\n");
     }

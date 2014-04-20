@@ -223,7 +223,7 @@ int dedup_layer_read_seg(char *temp_dir, struct cloudfs_seg *segp, char *buf,
   dbg_print("[DBG] local file path %s\n", tpath);
 
   if (access(tpath, F_OK) < 0) {
-    dbg_print("[DBG] segment not found in cache directory\n");
+    dbg_print("[DBG] segment not found in temporary directory\n");
     if (Cache_disabled) {
       retval = compress_layer_download_seg(tpath, segp->md5);
     } else {
