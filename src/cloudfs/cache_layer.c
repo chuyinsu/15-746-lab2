@@ -7,10 +7,15 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/xattr.h>
+#include <time.h>
 
 #include "cloudfs.h"
 #include "cloudapi.h"
 #include "compress_layer.h"
+
+#define U_TIMESTAMP ("user.timestamp")
 
 extern FILE *Log;
 extern char Cache_path[MAX_PATH_LEN];
@@ -42,6 +47,38 @@ int cache_layer_init(int total_space, int init_space)
 }
 
 /**
+ * @brief Update a cache file with current timestamp.
+ *        The timestamp is saved as an extended attribute.
+ * @param cache_file Pathname of the cache file. It should have
+ *        MAX_PATH_LEN bytes.
+ * @return 0 on success, negative otherwise.
+ */
+int update_timestamp(char *cache_file)
+{
+  int retval = 0;
+
+  struct timespec ts;
+  retval = clock_gettime(CLOCK_REALTIME, &ts);
+  if (retval < 0) {
+    retval = cloudfs_error("update_timestamp");
+    return retval;
+  }
+  retval = lsetxattr(cache_file, U_TIMESTAMP, &ts, sizeof(struct timespec), 0);
+  if (retval < 0) {
+    retval = cloudfs_error("update_timestamp");
+    return retval;
+  }
+
+  dbg_print("cache file %s timestamp updated to %ld sec %ld nsec\n",
+      cache_file, ts.tv_sec, ts.tv_nsec);
+
+  dbg_print("[DBG] update_timestamp(cache_file=\"%s\")=%d\n",
+      cache_file, retval);
+
+  return retval;
+}
+
+/**
  * @brief Download a segment through the cache layer.
  *        This function will first search for the segment in the cache.
  *        If found, copy directly from the cache directory.
@@ -64,9 +101,19 @@ int cache_layer_download_seg(char *target_file, char *key)
   if (access(cache_file, F_OK) < 0) {
     dbg_print("[DBG] segment not found in cache\n");
     retval = compress_layer_download_seg(target_file, key);
+    if (retval < 0) {
+      return retval;
+    }
   } else {
     dbg_print("[DBG] segment found in cache\n");
+    retval = update_timestamp(cache_file);
+    if (retval < 0) {
+      return retval;
+    }
     retval = compress_layer_decompress(cache_file, target_file);
+    if (retval < 0) {
+      return retval;
+    }
   }
 
   dbg_print("[DBG] cache_layer_download_seg(target_file=\"%s\","
@@ -118,6 +165,10 @@ int cache_layer_upload_seg(char *fpath, long offset, char *key, long len)
   } else {
     dbg_print("[DBG] remaining space is %ld, enough to hold the segment\n",
         Remaining_space);
+    retval = update_timestamp(cache_file);
+    if (retval < 0) {
+      return retval;
+    }
     Remaining_space -= len_compressed_file;
     dbg_print("[DBG] remaining space decreased to %ld\n", Remaining_space);
   }
