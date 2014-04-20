@@ -47,9 +47,7 @@ int cache_layer_init(int total_space, int init_space)
  *        If found, copy directly from the cache directory.
  *        If not found:
  *          1) If cache directory has enough space, download to cache.
- *          2) Otherwise, start cache eviction policy:
- *            1) If can make room for the segment, download to cache.
- *            2) Otherwise download directly from the cloud.
+ *          2) Otherwise, start cache eviction algorithm.
  * @param target_file Local pathname of the file to download to.
  * @param key The key of the cloud file. It should have
  *            MD5_DIGEST_LENGTH bytes.
@@ -146,9 +144,9 @@ int cache_layer_remove_seg(char *key)
   dbg_print("[DBG] remove segment through the cache layer: %s\n", cache_file);
 
   if (access(cache_file, F_OK) < 0) {
+    dbg_print("[DBG] segment not found in cache\n");
     cloud_delete_object(BUCKET, key);
     cloud_print_error();
-    dbg_print("[DBG] segment not found in cache\n");
   } else {
     dbg_print("[DBG] segment found in cache\n");
     struct stat sb;
