@@ -18,6 +18,7 @@
 #include "cloudapi.h"
 #include "hashtable.h"
 #include "dedup.h"
+#include "compress_layer.h"
 #include "cache_layer.h"
 
 #define BUF_LEN (1024)
@@ -28,6 +29,7 @@ static unsigned int Window_size;
 static unsigned int Avg_seg_size;
 static unsigned int Min_seg_size;
 static unsigned int Max_seg_size;
+static int Cache_disabled;
 
 void dedup_layer_get_key(unsigned char *md5, char *key);
 
@@ -173,12 +175,13 @@ static int dedup_layer_segmentation(char *fpath, int *num_seg,
  * @return 0 on success, -1 otherwise.
  */
 void dedup_layer_init(unsigned int window_size, unsigned int avg_seg_size,
-    unsigned int min_seg_size, unsigned int max_seg_size)
+    unsigned int min_seg_size, unsigned int max_seg_size, int no_cache)
 {
   Window_size = window_size;
   Avg_seg_size = avg_seg_size;
   Min_seg_size = min_seg_size;
   Max_seg_size = max_seg_size;
+  Cache_disabled = no_cache;
   dbg_print("[DBG] dedup_layer_init()\n");
 }
 
@@ -221,7 +224,11 @@ int dedup_layer_read_seg(char *temp_dir, struct cloudfs_seg *segp, char *buf,
 
   if (access(tpath, F_OK) < 0) {
     dbg_print("[DBG] segment not found in cache directory\n");
-    retval = cache_layer_download_seg(tpath, segp->md5);
+    if (Cache_disabled) {
+      retval = compress_layer_download_seg(tpath, segp->md5);
+    } else {
+      retval = cache_layer_download_seg(tpath, segp->md5);
+    }
     if (retval < 0) {
       return retval;
     }
@@ -302,7 +309,12 @@ static int dedup_layer_add_seg(struct cloudfs_seg *segp, char *fpath,
     dbg_print("[DBG] cloud key is %s\n", segp->md5);
 
     /* upload the segment */
-    retval = cache_layer_upload_seg(fpath, offset, segp->md5, segp->seg_size);
+    if (Cache_disabled) {
+      retval =
+        compress_layer_upload_seg(fpath, offset, segp->md5, segp->seg_size);
+    } else {
+      retval = cache_layer_upload_seg(fpath, offset, segp->md5, segp->seg_size);
+    }
     if (retval < 0) {
       return retval;
     }
@@ -344,7 +356,12 @@ static int dedup_layer_remove_seg(struct cloudfs_seg *segp)
     (found->ref_count)--;
     ht_sync(found);
     if (found->ref_count == 0) {
-      cache_layer_remove_seg(segp->md5);
+      if (Cache_disabled) {
+        cloud_delete_object(BUCKET, segp->md5);
+        cloud_print_error();
+      } else {
+        cache_layer_remove_seg(segp->md5);
+      }
     }
   } else {
     dbg_print("[DBG] segment to remove not found in hash table\n");

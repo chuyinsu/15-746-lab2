@@ -30,6 +30,7 @@
 
 #include "hashtable.h"
 #include "dedup_layer.h"
+#include "cache_layer.h"
 
 #define UNUSED __attribute__((unused))
 
@@ -1312,6 +1313,18 @@ int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
   snprintf(Bkt_prfx, MAX_PATH_LEN, "%s%s", Temp_path, "/bucket");
   dbg_print("[DBG] Bkt_prfx=\"%s\"\n", Bkt_prfx);
 
+  /* initialize .cache directory */
+  memset(Cache_path, '\0', MAX_PATH_LEN);
+  snprintf(Cache_path, MAX_PATH_LEN, "%s%s", State_.ssd_path, CACHE_PATH);
+  dbg_print("[DBG] Cache_path=\"%s\"\n", Cache_path);
+  if (mkdir(Cache_path, DEFAULT_DIR_MODE) < 0) {
+    if (errno != EEXIST) {
+      dbg_print("[ERR] failed to create .cache directory\n");
+      exit(EXIT_FAILURE);
+    }
+  }
+
+  State_.no_cache = 1;
   if (!State_.no_dedup) {
     dbg_print("[DBG] dedup enabled\n");
     if (ht_init(Bkt_prfx, BKT_NUM, BKT_SIZE) < 0) {
@@ -1319,20 +1332,13 @@ int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name) {
       exit(EXIT_FAILURE);
     }
     dedup_layer_init(State_.rabin_window_size, State_.avg_seg_size,
-        State_.avg_seg_size / 2, State_.avg_seg_size * 2);
+        State_.avg_seg_size / 2, State_.avg_seg_size * 2, State_.no_cache);
     if (!State_.no_cache) {
       dbg_print("[DBG] cache enabled\n");
+      dbg_print("[DBG] cache size %d KB\n", State_.cache_size);
 
-      /* initialize .cache directory */
-      memset(Cache_path, '\0', MAX_PATH_LEN);
-      snprintf(Cache_path, MAX_PATH_LEN, "%s%s", State_.ssd_path, CACHE_PATH);
-      dbg_print("[DBG] Cache_path=\"%s\"\n", Cache_path);
-      if (mkdir(Cache_path, DEFAULT_DIR_MODE) < 0) {
-        if (errno != EEXIST) {
-          dbg_print("[ERR] failed to create .cache directory\n");
-          exit(EXIT_FAILURE);
-        }
-      }
+      /* initialize the cache layer */
+      cache_layer_init(State_.cache_size);
     } else {
       dbg_print("[DBG] cache disabled\n");
     }
