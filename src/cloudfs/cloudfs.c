@@ -1,6 +1,6 @@
 /**
  * @file cloudfs.c
- * @brief 15-746 Spring 2014 Project 2 - Hybrid Cloud Storage System (Part 2)
+ * @brief 15-746 Spring 2014 Project 2 - Hybrid Cloud Storage System (Part 3)
  *        Reference: Writing a FUSE Filesystem: a Tutorial
  *        (http://www.cs.nmsu.edu/~pfeiffer/fuse-tutorial)
  * @author Yinsu Chu (yinsuc)
@@ -74,9 +74,9 @@
 #define BKT_SIZE (3 * sizeof(struct cloudfs_seg))
 
 FILE *Log;
+char Cache_path[MAX_PATH_LEN];
 static struct cloudfs_state State_;
 static char Temp_path[MAX_PATH_LEN];
-static char Cache_path[MAX_PATH_LEN];
 static char Bkt_prfx[MAX_PATH_LEN];
 
 /* callback function for downloading from the cloud */

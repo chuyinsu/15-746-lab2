@@ -79,6 +79,58 @@ int compress_layer_download_seg(char *target_file, char *key)
 }
 
 /**
+ * @brief Compress part of a file to the target file.
+ * @param fpath Pathname of the entire file.
+ * @param offset Offset of the part to compress.
+ * @param len Length of the part to compress.
+ * @param target_file Pathname of the target file to store the result.
+ * @return Length of the compressed file on success, negative otherwise.
+ */
+long compress_layer_compress(char *fpath, long offset, long len,
+    char *target_file)
+{
+  long retval = 0;
+
+  FILE *decomp = fopen(fpath, "rb");
+  if (decomp == NULL) {
+    retval = cloudfs_error("compress_layer_compress - fopen");
+    return retval;
+  }
+
+  retval = fseek(decomp, offset, SEEK_SET);
+  if (retval < 0) {
+    retval = cloudfs_error("compress_layer_compress - fseek");
+    return retval;
+  }
+
+  FILE *comp = fopen(target_file, "wb");
+  if (comp == NULL) {
+    retval = cloudfs_error("compress_layer_compress - fopen");
+    return retval;
+  }
+
+  retval = def(decomp, comp, len, Z_DEFAULT_COMPRESSION);
+  if (retval < 0) {
+    dbg_print("[ERR] failed to compress %s\n", fpath);
+    return retval;
+  }
+
+  dbg_print("[DBG] compressed file is %s\n", target_file);
+
+  fclose(decomp);
+  fclose(comp);
+
+  comp = fopen(target_file, "rb");
+  fseek(comp, 0, SEEK_END);
+  retval = ftell(comp);
+  fclose(comp);
+
+  dbg_print("[DBG] length of compressed file is %ld\n", retval);
+
+  return retval;
+}
+
+/**
  * @brief Compress and upload a segment.
  *        The segment is defined by "offset" and "len" in a file.
  * @param fpath Pathname of the entire file.
@@ -94,29 +146,12 @@ int compress_layer_upload_seg(char *fpath, long offset, char *key, long len)
   char tpath[MAX_PATH_LEN] = "";
   sprintf(tpath, "%s%s.%ld.%ld%s", fpath, ".seg", offset, len, COMP_SUFFIX);
 
-  FILE *decomp = fopen(fpath, "rb");
-  fseek(decomp, offset, SEEK_SET);
-
-  FILE *comp = fopen(tpath, "wb");
-  retval = def(decomp, comp, len, Z_DEFAULT_COMPRESSION);
-  if (retval < 0) {
-    dbg_print("[ERR] failed to compress %s\n", fpath);
-    return retval;
+  long len_compressed_file = compress_layer_compress(fpath, offset, len, tpath);
+  if (len_compressed_file < 0) {
+    return len_compressed_file;
   }
 
-  dbg_print("[DBG] compressed file is %s\n", tpath);
-
-  fclose(decomp);
-  fclose(comp);
-
-  long len_compressed_file = 0;
   Cfile = fopen(tpath, "rb");
-  fseek(Cfile, 0, SEEK_END);
-  len_compressed_file = ftell(Cfile);
-  fseek(Cfile, 0, SEEK_SET);
-
-  dbg_print("[DBG] length of compressed file is %ld\n", len_compressed_file);
-
   cloud_put_object(BUCKET, key, len_compressed_file, put_buffer);
   cloud_print_error();
   fclose(Cfile);

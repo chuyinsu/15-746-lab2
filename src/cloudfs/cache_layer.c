@@ -13,9 +13,16 @@
 #define BYTES_PER_KB (1024)
 
 extern FILE *Log;
+extern char Cache_path[MAX_PATH_LEN];
 
-static int Total_space;
-static int Remaining_space;
+static long Total_space;
+static long Remaining_space;
+
+/* callback function for uploading to the cloud */
+static FILE *Cfile; /* cloud file */
+static int put_buffer(char *buf, int len) {
+  return fread(buf, 1, len, Cfile);
+}
 
 /**
  * @brief CloudFS should call this function upon starting.
@@ -28,7 +35,7 @@ int cache_layer_init(int space)
   Total_space = space * BYTES_PER_KB;
   Remaining_space = space * BYTES_PER_KB;
 
-  dbg_print("[DBG] cache layer initialized, total %d bytes, remaining %d bytes\n",
+  dbg_print("[DBG] cache_layer_init(), total %ld bytes, remaining %ld bytes\n",
       Total_space, Remaining_space);
 
   return 0;
@@ -67,11 +74,40 @@ int cache_layer_download_seg(char *target_file, char *key)
  */
 int cache_layer_upload_seg(char *fpath, long offset, char *key, long len)
 {
-  (void) fpath;
-  (void) offset;
-  (void) key;
-  (void) len;
-  return 0;
+  int retval = 0;
+
+  char cache_file[MAX_PATH_LEN] = "";
+  sprintf(cache_file, "%s/%s", Cache_path, key);
+  dbg_print("[DBG] upload segment through the cache layer: %s\n", cache_file);
+
+  long len_compressed_file =
+    compress_layer_compress(fpath, offset, len, cache_file);
+  if (len_compressed_file < 0) {
+    return len_compressed_file;
+  }
+
+  if (Remaining_space < len_compressed_file) {
+    dbg_print("[DBG] remaining space is %ld, not enough to hold the segment,"
+        " uploading to the cloud\n", Remaining_space);
+
+    Cfile = fopen(cache_file, "rb");
+    cloud_put_object(BUCKET, key, len_compressed_file, put_buffer);
+    cloud_print_error();
+    fclose(Cfile);
+
+    retval = remove(cache_file);
+    if (retval < 0) {
+      retval = cloudfs_error("cache_layer_upload_seg");
+      return retval;
+    }
+  } else {
+    Remaining_space -= len_compressed_file;
+  }
+
+  dbg_print("[DBG] cache_layer_upload_seg(fpath=\"%s\", offset=%ld, key=\"%s\","
+      " len=%ld)=%d", fpath, offset, key, len, retval);
+
+  return retval;
 }
 
 /**
