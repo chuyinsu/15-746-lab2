@@ -17,11 +17,19 @@
 
 #define U_TIMESTAMP ("user.timestamp")
 
+#define CANNOT_EVICT (100)
+
 extern FILE *Log;
 extern char Cache_path[MAX_PATH_LEN];
 
 static long Total_space;
 static long Remaining_space;
+
+/* callback function for downloading from the cloud */
+static FILE *Tfile; /* temporary file */
+static int get_buffer(const char *buf, int len) {
+  return fwrite(buf, 1, len, Tfile);
+}
 
 /* callback function for uploading to the cloud */
 static FILE *Cfile; /* cloud file */
@@ -79,11 +87,33 @@ int update_timestamp(char *cache_file)
 }
 
 /**
+ * @brief Evict segments according to the cache eviction algorithm.
+ *        This is called when Remaining_space is less than zero and its purpose
+ *        is to evict segments to make Remaining_space above or equal to zero.
+ *        The algorithm works like this:
+ *          1) First evict the least referenced segments (less than ref_count of
+ *             "keep"). Use timestamp to break ties (LRU).
+ *          2) If "keep" has a least referenced count,
+ *             evict based on timestamp (LRU).
+ *          3) If "keep" is the ONLY segment with the least referenced count,
+ *             return CANNOT_EVICT to indicate no segments can be evicted.
+ * @param keep The key (MD5) of the segment causing the eviction. This segment
+ *             should not be evicted.
+ * @return 0 on success, CANNOT_EVICT if not segments can be evicted,
+ *         negative otherwise.
+ */
+int evict_segments(char *keep)
+{
+  (void) keep;
+  return 0;
+}
+
+/**
  * @brief Download a segment through the cache layer.
  *        This function will first search for the segment in the cache.
- *        If found, copy directly from the cache directory.
+ *        If found, decompress directly from the cache directory.
  *        If not found:
- *          1) If cache directory has enough space, download to cache.
+ *          1) If cache directory has enough space, download it to cache.
  *          2) Otherwise, start cache eviction algorithm.
  * @param target_file Local pathname of the file to download to.
  * @param key The key of the cloud file. It should have
@@ -100,9 +130,68 @@ int cache_layer_download_seg(char *target_file, char *key)
 
   if (access(cache_file, F_OK) < 0) {
     dbg_print("[DBG] segment not found in cache\n");
-    retval = compress_layer_download_seg(target_file, key);
+
+    /* download to cache directory */
+    Tfile = fopen(cache_file, "wb");
+    cloud_get_object(BUCKET, key, get_buffer);
+    cloud_print_error();
+    fclose(Tfile);
+    dbg_print("[DBG] segment downloaded as %s\n", cache_file);
+
+    /* update remaining space */
+    struct stat sb;
+    retval = lstat(cache_file, &sb);
     if (retval < 0) {
+      retval = cloudfs_error("cache_layer_download_seg");
       return retval;
+    }
+    Remaining_space -= (sb.st_size);
+    dbg_print("[DBG] segment size is %llu\n", sb.st_size);
+    dbg_print("[DBG] remaining space is now %ld\n", Remaining_space);
+
+    /* start cache eviction algorithm if needed */
+    if (Remaining_space < 0) {
+      dbg_print("[DBG] remaining space less than zero, starting eviction\n");
+      retval = evict_segments(key);
+      if (retval == CANNOT_EVICT) {
+        dbg_print("[DBG] cannot evict any segments\n");
+        Remaining_space += (sb.st_size);
+        dbg_print("[DBG] remaining space restored to %ld\n", Remaining_space);
+        retval = compress_layer_decompress(cache_file, target_file);
+        if (retval < 0) {
+          return retval;
+        }
+        retval = remove(cache_file);
+        if (retval < 0) {
+          retval = cloudfs_error("cache_layer_download_seg");
+          return retval;
+        }
+      } else if (retval < 0) {
+        return retval;
+      } else {
+        dbg_print("[DBG] eviction finished\n");
+
+        retval = update_timestamp(cache_file);
+        if (retval < 0) {
+          return retval;
+        }
+
+        /* delete from cloud */
+        cloud_delete_object(BUCKET, key);
+        cloud_print_error();
+      }
+    } else {
+      /* Remaining space is enough, no need of eviction */
+      dbg_print("[DBG] remaining space is enough\n");
+
+      retval = update_timestamp(cache_file);
+      if (retval < 0) {
+        return retval;
+      }
+
+      /* delete from cloud */
+      cloud_delete_object(BUCKET, key);
+      cloud_print_error();
     }
   } else {
     dbg_print("[DBG] segment found in cache\n");
