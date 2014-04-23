@@ -227,7 +227,7 @@ int dedup_layer_read_seg(char *temp_dir, struct cloudfs_seg *segp, char *buf,
     if (Cache_disabled) {
       retval = compress_layer_download_seg(tpath, segp->md5);
     } else {
-      retval = cache_layer_download_seg(tpath, segp->md5);
+      retval = cache_layer_download_seg(tpath, segp);
     }
     if (retval < 0) {
       return retval;

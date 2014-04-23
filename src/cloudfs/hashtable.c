@@ -416,7 +416,7 @@ int ht_search(struct cloudfs_seg *segp, struct cloudfs_seg **found)
   for (i = 0; i < sb.st_size / sizeof(struct cloudfs_seg); i++) {
     struct cloudfs_seg *slotp = (struct cloudfs_seg *)
       (Buckets[bucket_id] + i * sizeof(struct cloudfs_seg));
-    if ((slotp->ref_count > 0) && (slotp->seg_size == segp->seg_size)
+    if ((slotp->ref_count > 0)
         && (memcmp(slotp->md5, segp->md5, 2 * MD5_DIGEST_LENGTH) == 0)) {
       dbg_print("[DBG] segment found at slot %d\n", i);
       *found = slotp;
