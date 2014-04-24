@@ -7,7 +7,9 @@
 
 #include <stdio.h>
 
+#define DEBUG
 #include "cloudfs.h"
+
 #include "cloudapi.h"
 #include "compressapi.h"
 #include "zlib.h"

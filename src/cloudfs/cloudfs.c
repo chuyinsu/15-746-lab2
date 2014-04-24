@@ -26,7 +26,10 @@
 #include <unistd.h>
 #include <ftw.h>
 #include "cloudapi.h"
+
+//#define DEBUG
 #include "cloudfs.h"
+
 #include "dedup.h"
 
 #include "hashtable.h"

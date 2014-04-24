@@ -14,7 +14,9 @@
 #include <stdlib.h>
 #include <errno.h>
 
+#define DEBUG
 #include "cloudfs.h"
+
 #include "cloudapi.h"
 #include "hashtable.h"
 #include "dedup.h"

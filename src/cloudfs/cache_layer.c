@@ -15,7 +15,9 @@
 #include <limits.h>
 #include <dirent.h>
 
+#define DEBUG
 #include "cloudfs.h"
+
 #include "cloudapi.h"
 #include "compress_layer.h"
 #include "hashtable.h"
@@ -47,17 +49,19 @@ static int put_buffer(char *buf, int len) {
 static inline int timespec_compare(const struct timespec *lhs,
     const struct timespec *rhs)
 {
-  if (lhs->tv_sec < rhs->tv_sec)
+  if (lhs->tv_sec < rhs->tv_sec) {
     return -1;
-  if (lhs->tv_sec > rhs->tv_sec)
+  }
+  if (lhs->tv_sec > rhs->tv_sec) {
     return 1;
+  }
   return lhs->tv_nsec - rhs->tv_nsec;
 }
 
 /**
  * @brief CloudFS should call this function upon starting.
- * @param no_cache The --no-cache argument passed to CloudFS.
- * @param space The --cache-size argument passed to CloudFS.
+ * @param total_space The --cache-size argument passed to CloudFS.
+ * @param init_space Cache space already been used upon starting.
  * @return 0 on success (always 0 for now).
  */
 int cache_layer_init(int total_space, int init_space)
@@ -94,7 +98,7 @@ int update_timestamp(char *cache_file)
     return retval;
   }
 
-  dbg_print("cache file %s timestamp updated to %ld sec %ld nsec\n",
+  dbg_print("[DBG] cache file %s timestamp updated to %ld sec %ld nsec\n",
       cache_file, ts.tv_sec, ts.tv_nsec);
 
   dbg_print("[DBG] update_timestamp(cache_file=\"%s\")=%d\n",
@@ -155,11 +159,11 @@ int cache_layer_find_least_ref_count(int num_evicted,
       dbg_print("[DBG] scanning cache dir: %s\n", ent->d_name);
 
       if ((strlen(ent->d_name) == (2 * MD5_DIGEST_LENGTH))
-          && (!cache_layer_in_evicted(num_evicted, evicted, ent->d_name))
-          && (memcmp(keep->md5, ent->d_name, 2 * MD5_DIGEST_LENGTH) != 0)) {
+          && (memcmp(keep->md5, ent->d_name, 2 * MD5_DIGEST_LENGTH) != 0)
+          && (!cache_layer_in_evicted(num_evicted, evicted, ent->d_name))) {
 
         dbg_print("[DBG] segment %s not in \"evicted\" and"
-            " not equal to \"found\"", ent->d_name);
+            " not equal to \"found\"\n", ent->d_name);
 
         struct cloudfs_seg seg;
         seg.ref_count = 0;
@@ -185,9 +189,11 @@ int cache_layer_find_least_ref_count(int num_evicted,
 
       }
     }
+    closedir(dir);
   } else {
     retval = cloudfs_error("cache_layer_find_least_ref_count");
   }
+
 
   return retval;
 }
@@ -219,6 +225,11 @@ int cache_layer_find_oldest_seg(int num_evicted, struct cloudfs_seg *evicted,
     while ((ent = readdir(dir)) != NULL) {
       dbg_print("[DBG] scanning cache dir: %s\n", ent->d_name);
 
+      /* skip over . and .. */
+      if (strlen(ent->d_name) != (2 * MD5_DIGEST_LENGTH)) {
+        continue;
+      }
+
       struct cloudfs_seg seg;
       seg.ref_count = 0;
       seg.seg_size = 0;
@@ -236,11 +247,11 @@ int cache_layer_find_oldest_seg(int num_evicted, struct cloudfs_seg *evicted,
 #endif
 
       if ((found->ref_count == least_ref_count)
-          && (!cache_layer_in_evicted(num_evicted, evicted, ent->d_name))
-          && (memcmp(keep->md5, ent->d_name, 2 * MD5_DIGEST_LENGTH) != 0)) {
+          && (memcmp(keep->md5, ent->d_name, 2 * MD5_DIGEST_LENGTH) != 0)
+          && (!cache_layer_in_evicted(num_evicted, evicted, ent->d_name))) {
 
         dbg_print("[DBG] segment %s not in \"evicted\" and"
-            " not equal to \"found\"", ent->d_name);
+            " not equal to \"found\"\n", ent->d_name);
 
         char cache_file[MAX_PATH_LEN] = "";
         sprintf(cache_file, "%s/%s", Cache_path, found->md5);
@@ -263,6 +274,15 @@ int cache_layer_find_oldest_seg(int num_evicted, struct cloudfs_seg *evicted,
           dbg_print("[DBG] oldest_ts initialized to:\n");
           dbg_print("      tv_sec = %ld\n", oldest_ts.tv_sec);
           dbg_print("      tv_nsec = %ld\n", oldest_ts.tv_nsec);
+
+          next_evict->ref_count = found->ref_count;
+          next_evict->seg_size = found->seg_size;
+          memset(next_evict->md5, '\0', 2 * MD5_DIGEST_LENGTH + 1);
+          memcpy(next_evict->md5, found->md5, 2 * MD5_DIGEST_LENGTH);
+          dbg_print("[DBG] next_evict initialized to:\n");
+#ifdef DEBUG
+          print_seg(next_evict);
+#endif
         } else if (timespec_compare(&ts, &oldest_ts) < 0) {
           oldest_ts = ts;
           dbg_print("[DBG] oldest_ts updated to:\n");
@@ -280,6 +300,7 @@ int cache_layer_find_oldest_seg(int num_evicted, struct cloudfs_seg *evicted,
         }
       }
     }
+    closedir(dir);
   } else {
     retval = cloudfs_error("cache_layer_find_oldest_seg");
   }
@@ -398,7 +419,19 @@ int cache_layer_evict_segments(struct cloudfs_seg *keep)
     memcpy(new_evicted->md5, next_evict.md5, 2 * MD5_DIGEST_LENGTH);
     dbg_print("[DBG] next segment to evict added to array\n");
 
-    remaining_space += (next_evict.seg_size);
+    char cache_file[MAX_PATH_LEN] = "";
+    sprintf(cache_file, "%s/%s", Cache_path, next_evict.md5);
+
+    /* get compressed segment length */
+    struct stat sb;
+    retval = lstat(cache_file, &sb);
+    if (retval < 0) {
+      retval = cloudfs_error("cache_layer_evict_segments");
+      return retval;
+    }
+    dbg_print("[DBG] length of compressed segment is %llu\n", sb.st_size);
+
+    remaining_space += (sb.st_size);
     dbg_print("[DBG] remaining space increased to %ld\n", remaining_space);
   }
 
@@ -432,14 +465,15 @@ int cache_layer_evict_segments(struct cloudfs_seg *keep)
       return retval;
     }
     dbg_print("[DBG] cache file %s deleted\n", cache_file);
+
+    Remaining_space += (sb.st_size);
+    dbg_print("[DBG] global Remaining_space increased to %ld\n",
+        Remaining_space);
   }
 
   if (evicted != NULL) {
     free(evicted);
   }
-
-  Remaining_space = remaining_space;
-  dbg_print("[DBG] global Remaining_space increased to %ld\n", Remaining_space);
 
   return retval;
 }
@@ -486,7 +520,7 @@ int cache_layer_download_seg(char *target_file, struct cloudfs_seg *segp)
     }
     Remaining_space -= (sb.st_size);
     dbg_print("[DBG] segment size is %llu\n", sb.st_size);
-    dbg_print("[DBG] remaining space decreases to %ld\n", Remaining_space);
+    dbg_print("[DBG] Remaining space decreases to %ld\n", Remaining_space);
 
     /* start cache eviction algorithm if needed */
     if (Remaining_space < 0) {
