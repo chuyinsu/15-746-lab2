@@ -12,6 +12,8 @@
 #include <time.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
+#include <dirent.h>
 
 #include "cloudfs.h"
 #include "cloudapi.h"
@@ -20,8 +22,8 @@
 
 #define U_TIMESTAMP ("user.timestamp")
 
-#define CANNOT_EVICT (100)
-#define NO_MORE_SEGS (200)
+#define CANNOT_EVICT (-1000)
+#define NO_MORE_SEGS (-1001)
 
 extern FILE *Log;
 extern char Cache_path[MAX_PATH_LEN];
@@ -39,6 +41,17 @@ static int get_buffer(const char *buf, int len) {
 static FILE *Cfile; /* cloud file */
 static int put_buffer(char *buf, int len) {
   return fread(buf, 1, len, Cfile);
+}
+
+/* Referenced from time.h. Compares two timespec structure. */
+static inline int timespec_compare(const struct timespec *lhs,
+    const struct timespec *rhs)
+{
+  if (lhs->tv_sec < rhs->tv_sec)
+    return -1;
+  if (lhs->tv_sec > rhs->tv_sec)
+    return 1;
+  return lhs->tv_nsec - rhs->tv_nsec;
 }
 
 /**
@@ -91,47 +104,186 @@ int update_timestamp(char *cache_file)
 }
 
 /**
+ * @brief Check whether a segment is in "evicted" array.
+ * @param num_evicted Number of segments in "evicted".
+ * @param evicted Array of segments.
+ * @param key The MD5 of the cache file.
+ *            It should have 2 * MD5_DIGEST_LENGTH bytes.
+ * @return 0 on not in, 1 otherwise.
+ */
+int cache_layer_in_evicted(int num_evicted, struct cloudfs_seg *evicted,
+    char *key)
+{
+  int i = 0;
+  for (i = 0; i < num_evicted; i++) {
+    dbg_print("[DBG] comparing with %s in \"evicted\"\n", evicted[i].md5);
+    if (memcmp(evicted[i].md5, key, 2 * MD5_DIGEST_LENGTH) == 0) {
+      dbg_print("[DBG] segment %s found in \"evicted\"\n", key);
+      return 1;
+    }
+  }
+  dbg_print("[DBG] segment %s not found in \"evicted\"\n", key);
+  return 0;
+}
+
+/**
  * @brief Traverse the cache directory, find the least ref_count value.
  *        "num_evicted" number of segments in "evicted" and the
- *        "found" segment are ignored.
+ *        "keep" segment are ignored.
  * @param num_evicted Number of segments in "evicted".
  * @param evicted Array of segments to ignore.
- * @param found Segment to ignore.
+ * @param keep Segment to ignore.
  * @param least_ref_count Return the result here.
  * @return 0 on success, negative otherwise.
  */
 int cache_layer_find_least_ref_count(int num_evicted,
-    struct cloudfs_seg *evicted, struct cloudfs_seg *found,
+    struct cloudfs_seg *evicted, struct cloudfs_seg *keep,
     int *least_ref_count)
 {
-  (void) num_evicted;
-  (void) evicted;
-  (void) found;
-  (void) least_ref_count;
-  return 0;
+  int retval = 0;
+  int least = INT_MAX;
+
+  *least_ref_count = NO_MORE_SEGS;
+  dbg_print("[DBG] pre-set least_ref_count to NO_MORE_SEGS(%d)\n",
+      *least_ref_count);
+
+  DIR *dir = NULL;
+  struct dirent *ent = NULL;
+  if ((dir = opendir(Cache_path)) != NULL) {
+
+    while ((ent = readdir(dir)) != NULL) {
+      dbg_print("[DBG] scanning cache dir: %s\n", ent->d_name);
+
+      if ((strlen(ent->d_name) == (2 * MD5_DIGEST_LENGTH))
+          && (!cache_layer_in_evicted(num_evicted, evicted, ent->d_name))
+          && (memcmp(keep->md5, ent->d_name, 2 * MD5_DIGEST_LENGTH) != 0)) {
+
+        dbg_print("[DBG] segment %s not in \"evicted\" and"
+            " not equal to \"found\"", ent->d_name);
+
+        struct cloudfs_seg seg;
+        seg.ref_count = 0;
+        seg.seg_size = 0;
+        memset(seg.md5, '\0', 2 * MD5_DIGEST_LENGTH + 1);
+        memcpy(seg.md5, ent->d_name, 2 * MD5_DIGEST_LENGTH);
+
+        struct cloudfs_seg *found = NULL;
+        retval = ht_search(&seg, &found);
+        if (retval < 0) {
+          return retval;
+        }
+        dbg_print("[DBG] segment found in hash table:\n");
+#ifdef DEBUG
+        print_seg(found);
+#endif
+
+        if (found->ref_count < least) {
+          least = found->ref_count;
+          *least_ref_count = least;
+          dbg_print("[DBG] least_ref_count updated to %d\n", *least_ref_count);
+        }
+
+      }
+    }
+  } else {
+    retval = cloudfs_error("cache_layer_find_least_ref_count");
+  }
+
+  return retval;
 }
 
 /**
  * @brief Traverse the cache directory, get the oldest seg with given ref_count.
  *        "num_evicted" number of segments in "evicted" and the
- *        "found" segment are ignored.
+ *        "keep" segment are ignored.
  * @param num_evicted Number of segments in "evicted".
  * @param evicted Array of segments to ignore.
- * @param found Segment to ignore.
+ * @param keep Segment to ignore.
  * @param least_ref_count Target ref_count to match.
  * @param next_evict Copy and return the qualified segment here.
  * @return 0 on success, negative otherwise.
  */
 int cache_layer_find_oldest_seg(int num_evicted, struct cloudfs_seg *evicted,
-    struct cloudfs_seg *found, int least_ref_count,
+    struct cloudfs_seg *keep, int least_ref_count,
     struct cloudfs_seg *next_evict)
 {
-  (void) num_evicted;
-  (void) evicted;
-  (void) found;
-  (void) least_ref_count;
-  (void) next_evict;
-  return 0;
+  int retval = 0;
+  struct timespec oldest_ts;
+  oldest_ts.tv_sec = 0;
+  oldest_ts.tv_nsec = 0;
+
+  DIR *dir = NULL;
+  struct dirent *ent = NULL;
+  if ((dir = opendir(Cache_path)) != NULL) {
+
+    while ((ent = readdir(dir)) != NULL) {
+      dbg_print("[DBG] scanning cache dir: %s\n", ent->d_name);
+
+      struct cloudfs_seg seg;
+      seg.ref_count = 0;
+      seg.seg_size = 0;
+      memset(seg.md5, '\0', 2 * MD5_DIGEST_LENGTH + 1);
+      memcpy(seg.md5, ent->d_name, 2 * MD5_DIGEST_LENGTH);
+
+      struct cloudfs_seg *found = NULL;
+      retval = ht_search(&seg, &found);
+      if (retval < 0) {
+        return retval;
+      }
+      dbg_print("[DBG] segment found in hash table:\n");
+#ifdef DEBUG
+      print_seg(found);
+#endif
+
+      if ((found->ref_count == least_ref_count)
+          && (!cache_layer_in_evicted(num_evicted, evicted, ent->d_name))
+          && (memcmp(keep->md5, ent->d_name, 2 * MD5_DIGEST_LENGTH) != 0)) {
+
+        dbg_print("[DBG] segment %s not in \"evicted\" and"
+            " not equal to \"found\"", ent->d_name);
+
+        char cache_file[MAX_PATH_LEN] = "";
+        sprintf(cache_file, "%s/%s", Cache_path, found->md5);
+        dbg_print("[DBG] cache file %s has least_ref_count %d\n",
+            cache_file, found->ref_count);
+
+        struct timespec ts;
+        retval =
+          lgetxattr(cache_file, U_TIMESTAMP, &ts, sizeof(struct timespec));
+        if (retval < 0) {
+          retval = cloudfs_error("cache_layer_find_oldest_seg");
+          return retval;
+        }
+        dbg_print("[DBG] timestamp of %s:\n", cache_file);
+        dbg_print("      tv_sec = %ld\n", ts.tv_sec);
+        dbg_print("      tv_nsec = %ld\n", ts.tv_nsec);
+
+        if (oldest_ts.tv_sec == 0 && oldest_ts.tv_nsec == 0) {
+          oldest_ts = ts;
+          dbg_print("[DBG] oldest_ts initialized to:\n");
+          dbg_print("      tv_sec = %ld\n", oldest_ts.tv_sec);
+          dbg_print("      tv_nsec = %ld\n", oldest_ts.tv_nsec);
+        } else if (timespec_compare(&ts, &oldest_ts) < 0) {
+          oldest_ts = ts;
+          dbg_print("[DBG] oldest_ts updated to:\n");
+          dbg_print("      tv_sec = %ld\n", oldest_ts.tv_sec);
+          dbg_print("      tv_nsec = %ld\n", oldest_ts.tv_nsec);
+
+          next_evict->ref_count = found->ref_count;
+          next_evict->seg_size = found->seg_size;
+          memset(next_evict->md5, '\0', 2 * MD5_DIGEST_LENGTH + 1);
+          memcpy(next_evict->md5, found->md5, 2 * MD5_DIGEST_LENGTH);
+          dbg_print("[DBG] next_evict updated to:\n");
+#ifdef DEBUG
+          print_seg(next_evict);
+#endif
+        }
+      }
+    }
+  } else {
+    retval = cloudfs_error("cache_layer_find_oldest_seg");
+  }
+  return retval;
 }
 
 /**
