@@ -18,6 +18,12 @@ extern char Cache_path[MAX_PATH_LEN];
 static long Total_space;
 static long Remaining_space;
 
+/* callback function for downloading from the cloud */
+static FILE *Tfile; /* temporary file */
+static int get_buffer(const char *buf, int len) {
+  return fwrite(buf, 1, len, Tfile);
+}
+
 /* callback function for uploading to the cloud */
 static FILE *Cfile; /* cloud file */
 static int put_buffer(char *buf, int len) {
@@ -56,6 +62,7 @@ int cache_layer_init(int total_space, int init_space)
 int cache_layer_download_seg(char *target_file, char *key)
 {
   int retval = 0;
+  int no_space = 0;
 
   char cache_file[MAX_PATH_LEN] = "";
   sprintf(cache_file, "%s/%s", Cache_path, key);
@@ -63,10 +70,48 @@ int cache_layer_download_seg(char *target_file, char *key)
 
   if (access(cache_file, F_OK) < 0) {
     dbg_print("[DBG] segment not found in cache\n");
-    retval = compress_layer_download_seg(target_file, key);
+
+    /* download to cache directory */
+    Tfile = fopen(cache_file, "wb");
+    cloud_get_object(BUCKET, key, get_buffer);
+    cloud_print_error();
+    fclose(Tfile);
+    dbg_print("[DBG] segment downloaded as %s\n", cache_file);
+
+    /* update remaining space */
+    struct stat sb;
+    retval = lstat(cache_file, &sb);
+    if (retval < 0) {
+      retval = cloudfs_error("cache_layer_download_seg");
+      return retval;
+    }
+
+    if (Remaining_space >= (sb.st_size)) {
+      Remaining_space -= (sb.st_size);
+      dbg_print("[DBG] segment size is %llu\n", sb.st_size);
+      dbg_print("[DBG] Remaining space decreases to %ld\n", Remaining_space);
+
+      /* delete from cloud */
+      cloud_delete_object(BUCKET, key);
+      cloud_print_error();
+    } else {
+      no_space = 1;
+    }
   } else {
     dbg_print("[DBG] segment found in cache\n");
-    retval = compress_layer_decompress(cache_file, target_file);
+  }
+
+  retval = compress_layer_decompress(cache_file, target_file);
+  if (retval < 0) {
+    return retval;
+  }
+
+  if (no_space) {
+    retval = remove(cache_file);
+    if (retval < 0) {
+      retval = cloudfs_error("cache_layer_download_seg");
+      return retval;
+    }
   }
 
   dbg_print("[DBG] cache_layer_download_seg(target_file=\"%s\","
