@@ -17,13 +17,13 @@
 extern FILE *Log;
 
 /* callback function for downloading from the cloud */
-static FILE *Tfile; /* temporary file */
+static FILE *Tfile;
 static int get_buffer(const char *buf, int len) {
   return fwrite(buf, 1, len, Tfile);
 }
 
 /* callback function for uploading to the cloud */
-static FILE *Cfile; /* cloud file */
+static FILE *Cfile;
 static int put_buffer(char *buf, int len) {
   return fread(buf, 1, len, Cfile);
 }
@@ -59,8 +59,8 @@ int compress_layer_decompress(char *fpath, char *target_file)
 
 /**
  * @brief Download from the cloud according to the key,
- *        and de-compress into "target_file".
- * @param target_file Pathname of the file to de-compress into.
+ *        and decompress into "target_file".
+ * @param target_file Pathname of the file to decompress into.
  *                    It should have MAX_PATH_LEN bytes.
  * @param key The key of the cloud file. It should have
  *            MD5_DIGEST_LENGTH bytes.

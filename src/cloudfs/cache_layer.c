@@ -1,6 +1,11 @@
 /**
  * @file cache_layer.c
  * @brief Cache layer of CloudFS.
+ *        A naive implementation of cache layer:
+ *        1) Upload: if cache directory has enough space, copy to the cache
+ *                   directory; otherwise upload to the cloud.
+ *        2) Download: if segment found in cache, copy from the cache directory;
+ *                     otherwise, download from the cloud.
  * @author Yinsu Chu (yinsuc)
  */
 
@@ -19,15 +24,15 @@ static long Total_space;
 static long Remaining_space;
 
 /* callback function for uploading to the cloud */
-static FILE *Cfile; /* cloud file */
+static FILE *Cfile;
 static int put_buffer(char *buf, int len) {
   return fread(buf, 1, len, Cfile);
 }
 
 /**
  * @brief CloudFS should call this function upon starting.
- * @param no_cache The --no-cache argument passed to CloudFS.
- * @param space The --cache-size argument passed to CloudFS.
+ * @param total_space The --cache-size argument passed to CloudFS.
+ * @param init_space Cache space already been used upon starting.
  * @return 0 on success (always 0 for now).
  */
 int cache_layer_init(int total_space, int init_space)
@@ -45,12 +50,10 @@ int cache_layer_init(int total_space, int init_space)
  * @brief Download a segment through the cache layer.
  *        This function will first search for the segment in the cache.
  *        If found, copy directly from the cache directory.
- *        If not found:
- *          1) If cache directory has enough space, download to cache.
- *          2) Otherwise, start cache eviction algorithm.
+ *        Otherwise, download from the cloud.
  * @param target_file Local pathname of the file to download to.
  * @param key The key of the cloud file. It should have
- *            MD5_DIGEST_LENGTH bytes.
+ *            at least MD5_DIGEST_LENGTH bytes.
  * @return 0 on success, negative otherwise.
  */
 int cache_layer_download_seg(char *target_file, char *key)
@@ -103,7 +106,7 @@ int cache_layer_upload_seg(char *fpath, long offset, char *key, long len)
 
   if (Remaining_space < len_compressed_file) {
     dbg_print("[DBG] remaining space is %ld, not enough to hold the segment,"
-        " uploading to the cloud\n", Remaining_space);
+        " upload to the cloud\n", Remaining_space);
 
     Cfile = fopen(cache_file, "rb");
     cloud_put_object(BUCKET, key, len_compressed_file, put_buffer);
@@ -116,10 +119,10 @@ int cache_layer_upload_seg(char *fpath, long offset, char *key, long len)
       return retval;
     }
   } else {
-    dbg_print("[DBG] remaining space is %ld, enough to hold the segment\n",
+    dbg_print("[DBG] Remaining space is %ld, enough to hold the segment\n",
         Remaining_space);
     Remaining_space -= len_compressed_file;
-    dbg_print("[DBG] remaining space decreased to %ld\n", Remaining_space);
+    dbg_print("[DBG] Remaining space decreased to %ld\n", Remaining_space);
   }
 
   dbg_print("[DBG] cache_layer_upload_seg(fpath=\"%s\", offset=%ld, key=\"%s\","
@@ -149,19 +152,24 @@ int cache_layer_remove_seg(char *key)
     cloud_print_error();
   } else {
     dbg_print("[DBG] segment found in cache\n");
+
+    /* get the size of the compressed segment */
     struct stat sb;
     retval = lstat(cache_file, &sb);
     if (retval < 0) {
       retval = cloudfs_error("cache_layer_remove_seg");
       return retval;
     }
+
     retval = remove(cache_file);
     if (retval < 0) {
       retval = cloudfs_error("cache_layer_remove_seg");
       return retval;
     }
+
     Remaining_space += sb.st_size;
-    dbg_print("[DBG] remaining space increased to %ld\n", Remaining_space);
+
+    dbg_print("[DBG] Remaining space increased to %ld\n", Remaining_space);
   }
 
   dbg_print("[DBG] cache_layer_remove_seg(key=\"%s\")=%d", key, retval);
