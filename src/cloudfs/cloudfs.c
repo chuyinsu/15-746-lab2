@@ -242,6 +242,7 @@ void cloudfs_get_fullpath(const char *path, char *fullpath)
 int cloudfs_error(char *error_str)
 {
   int retval = -errno;
+  fprintf(stderr, "[ERR] %s : %s\n", error_str, strerror(errno));
   dbg_print("[ERR] %s : %s\n", error_str, strerror(errno));
   return retval;
 }
