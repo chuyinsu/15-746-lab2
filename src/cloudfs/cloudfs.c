@@ -1,6 +1,6 @@
 /**
  * @file cloudfs.c
- * @brief 15-746 Spring 2014 Project 2 - Hybrid Cloud Storage System (Part 3)
+ * @brief 15-746 Spring 2014 Project 2 - Hybrid Cloud Storage System
  *        Reference: Writing a FUSE Filesystem: a Tutorial
  *        (http://www.cs.nmsu.edu/~pfeiffer/fuse-tutorial)
  * @author Yinsu Chu (yinsuc)
@@ -27,7 +27,7 @@
 #include <ftw.h>
 #include "cloudapi.h"
 
-//#define DEBUG
+// #define DEBUG
 #include "cloudfs.h"
 
 #include "dedup.h"
@@ -85,13 +85,13 @@ static char Bkt_prfx[MAX_PATH_LEN];
 static int Cache_init_size;
 
 /* callback function for downloading from the cloud */
-static FILE *Tfile; /* temporary file */
+static FILE *Tfile;
 static int get_buffer(const char *buf, int len) {
   return fwrite(buf, 1, len, Tfile);
 }
 
 /* callback function for uploading to the cloud */
-static FILE *Cfile; /* cloud file */
+static FILE *Cfile;
 static int put_buffer(char *buf, int len) {
   return fread(buf, 1, len, Cfile);
 }
@@ -147,9 +147,9 @@ int cloudfs_upgrade_attr(struct stat *sp, char *fpath)
       fn);
 
   /* according to the test cases, these times should not be updated */
-  //CK_ERR(lsetxattr(fpath, U_ATIME, &sp->st_atime, sizeof(time_t), 0), fn);
-  //CK_ERR(lsetxattr(fpath, U_MTIME, &sp->st_mtime, sizeof(time_t), 0), fn);
-  //CK_ERR(lsetxattr(fpath, U_CTIME, &sp->st_ctime, sizeof(time_t), 0), fn);
+  // CK_ERR(lsetxattr(fpath, U_ATIME, &sp->st_atime, sizeof(time_t), 0), fn);
+  // CK_ERR(lsetxattr(fpath, U_MTIME, &sp->st_mtime, sizeof(time_t), 0), fn);
+  // CK_ERR(lsetxattr(fpath, U_CTIME, &sp->st_ctime, sizeof(time_t), 0), fn);
 
   CK_ERR(lsetxattr(fpath, U_SIZE, &sp->st_size, sizeof(off_t), 0), fn);
   CK_ERR(lsetxattr(fpath, U_BLOCKS , &sp->st_blocks, sizeof(blkcnt_t), 0), fn);
@@ -188,7 +188,7 @@ void cloudfs_get_temppath(const char *fpath, char *tpath)
  *        keys for the cloud storage.
  * @param fpath Pathname of the file.
  * @param key The corresponding temporary directory on SSD. It should have
- *            at least MAX_PATH_LEN byte space.
+ *            at least MAX_PATH_LEN bytes.
  * @return Void.
  */
 void cloudfs_get_key(const char *fpath, char *key)
@@ -223,11 +223,10 @@ static int cloudfs_is_in_cloud(char *fpath)
 }
 
 /**
- * @brief Get the fullpath in the underlying filesystem (SSD)
- *        of a given CloudFS path.
+ * @brief Get the fullpath in SSD of a given CloudFS path.
  * @param path A CloudFS path.
  * @param fullpath The "real" path in SSD is returned here. It should
- *                 have at least MAX_PATH_LEN byte space.
+ *                 have at least MAX_PATH_LEN bytes.
  * @return Void.
  */
 void cloudfs_get_fullpath(const char *path, char *fullpath)
@@ -240,6 +239,7 @@ void cloudfs_get_fullpath(const char *path, char *fullpath)
 /**
  * @brief Translate errno to FUSE error return value by negating it.
  * @param error_str The error message passed from the caller.
+ *                  Typically this is the caller's function name.
  * @return FUSE error return value (-errno).
  */
 int cloudfs_error(char *error_str)
@@ -281,9 +281,9 @@ int cloudfs_getattr(const char *path, struct stat *sb)
     CK_ERR(lgetxattr(fpath, U_BLOCKS, &sb->st_blocks, sizeof(blkcnt_t)), fn);
 
     /* according to the test cases, these times should not be read */
-    //CK_ERR(lgetxattr(fpath, U_ATIME, &sb->st_atime, sizeof(time_t)), fn);
-    //CK_ERR(lgetxattr(fpath, U_MTIME, &sb->st_mtime, sizeof(time_t)), fn);
-    //CK_ERR(lgetxattr(fpath, U_CTIME, &sb->st_ctime, sizeof(time_t)), fn);
+    // CK_ERR(lgetxattr(fpath, U_ATIME, &sb->st_atime, sizeof(time_t)), fn);
+    // CK_ERR(lgetxattr(fpath, U_MTIME, &sb->st_mtime, sizeof(time_t)), fn);
+    // CK_ERR(lgetxattr(fpath, U_CTIME, &sb->st_ctime, sizeof(time_t)), fn);
   } else {
     retval = lstat(fpath, sb);
     if (retval < 0) {
@@ -322,7 +322,7 @@ int cloudfs_getxattr(const char *path, const char *name, char *value,
   }
 
   /* this is a compromise for the test environment,
-   * strange extended attributes (such as security.capability)
+   * strange extended attributes (such as "security.capability")
    * are read and not sure why... since they do not exist,
    * a ENOENT error will be returned causing erroneous display */
   if (retval == -ENOENT) {
@@ -361,7 +361,7 @@ int cloudfs_setxattr(const char *path, const char *name, const char *value,
   }
 
   dbg_print("[DBG] cloudfs_setxattr(path=\"%s\", name=\"%s\", value=\"%s\","
-      "size=%d, flags=%d)=%d\n", path, name, value, size, flags, retval);
+      " size=%d, flags=%d)=%d\n", path, name, value, size, flags, retval);
 
   return retval;
 }
@@ -497,12 +497,12 @@ int cloudfs_open(const char *path, struct fuse_file_info *fi)
 /**
  * @brief Read data from an opened file.
  *        For part 1:
- *        The underlying file descriptor has already been saved in "fi",
- *        so here we can directly use it.
+ *         The underlying file descriptor has already been saved in "fi",
+ *         so here we can directly use it.
  *        For part 2:
- *        Same logic for local files; for cloud files, download needed segments
- *        and read them into the buffer. This avoids the effort to download
- *        unnecessary segments.
+ *         Same logic for local files; for cloud files, download needed segments
+ *         and read them into the buffer. This avoids the effort to download
+ *         unnecessary segments.
  * @param path Pathname of the file.
  * @param buf Returned data is placed here.
  * @param size Size of the buffer.
@@ -676,8 +676,8 @@ int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
 /**
  * @brief Write data to an opened file.
  *        If the file is not marked dirty, it has not been written before.
- *        Then download all of its content and save the file handle.
- *        Otherwise (marked dirty), directly write to the file handle in fi->fh.
+ *        Then download all of its content, write it and save the file handle.
+ *        Otherwise (is dirty), directly write to the file handle in fi->fh.
  * @param path Pathname of the file to write.
  * @param buf The content to write.
  * @param size Size of the content buffer.
@@ -712,7 +712,7 @@ int cloudfs_write(const char *path, const char *buf, size_t size, off_t offset,
       dirty = 1;
       lsetxattr(fpath, U_DIRTY, &dirty, sizeof(int), 0);
 
-      /* open temporary file to get all content */
+      /* open temporary file, append all contents to it */
       FILE *t_fp = fopen(tpath, "ab");
 
       /* these are parameters required by the getline() function */
@@ -793,8 +793,7 @@ int cloudfs_rmdir_rec(char *path)
  *          - If its size does not exceed the threshold, just close it;
  *          - If its size has exceeded the threshold, move it to the cloud;
  *        For files stored in the cloud:
- *          - If file is not dirty,
- *            just delete the temporary segments.
+ *          - If file is not dirty, just delete the temporary segments.
  *          - If file is dirty:
  *            1) If its size shrinks below the threshold, move it back to SSD;
  *            2) Otherwise, replace the new version to the cloud;
@@ -1296,7 +1295,7 @@ int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name)
   argv[argc++] = "-s";
 
   /* run fuse in foreground */
-  //argv[argc++] = "-f";
+  // argv[argc++] = "-f";
 
   State_ = *state;
 

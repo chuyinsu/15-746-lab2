@@ -1,6 +1,23 @@
 /**
  * @file cache_layer.c
  * @brief Cache layer of CloudFS.
+ *        The cache policy works like this:
+ *        1) Upload: if cache directory has enough space, copy to the cache
+ *                   directory; otherwise upload to the cloud.
+ *        2) Download: if segment found in cache, copy from the cache directory;
+ *                     otherwise, if cache has enough space, download to cache;
+ *                     if cache does not have enough space, start the eviction
+ *                     algorithm.
+ *        3) Eviction: eviction starts if there is a segment S in the cloud
+ *                     which the user wants to use, but the cache does not have
+ *                     enough space. Here, ref_count has top priority,
+ *                     then use LRU to break the tie.
+ *                     For example, first find the least referenced segment in
+ *                     cache. If its ref_count is more than S's, no eviction can
+ *                     be made. If the least ref_count in the cache <=
+ *                     S's ref_count, then evict the least recently used segment
+ *                     having the smallest ref_count. Repeat this procedure
+ *                     untill cache has enough space.
  * @author Yinsu Chu (yinsuc)
  */
 
@@ -15,7 +32,7 @@
 #include <limits.h>
 #include <dirent.h>
 
-#define DEBUG
+// #define DEBUG
 #include "cloudfs.h"
 
 #include "cloudapi.h"
@@ -34,13 +51,13 @@ static long Total_space;
 static long Remaining_space;
 
 /* callback function for downloading from the cloud */
-static FILE *Tfile; /* temporary file */
+static FILE *Tfile;
 static int get_buffer(const char *buf, int len) {
   return fwrite(buf, 1, len, Tfile);
 }
 
 /* callback function for uploading to the cloud */
-static FILE *Cfile; /* cloud file */
+static FILE *Cfile;
 static int put_buffer(char *buf, int len) {
   return fread(buf, 1, len, Cfile);
 }
@@ -186,14 +203,12 @@ int cache_layer_find_least_ref_count(int num_evicted,
           *least_ref_count = least;
           dbg_print("[DBG] least_ref_count updated to %d\n", *least_ref_count);
         }
-
       }
     }
     closedir(dir);
   } else {
     retval = cloudfs_error("cache_layer_find_least_ref_count");
   }
-
 
   return retval;
 }
@@ -603,8 +618,8 @@ int cache_layer_upload_seg(char *fpath, long offset, char *key, long len)
   }
 
   if (Remaining_space < len_compressed_file) {
-    dbg_print("[DBG] remaining space is %ld, not enough to hold the segment,"
-        " uploading to the cloud\n", Remaining_space);
+    dbg_print("[DBG] Remaining space is %ld, not enough to hold the segment,"
+        " upload to the cloud\n", Remaining_space);
 
     Cfile = fopen(cache_file, "rb");
     cloud_put_object(BUCKET, key, len_compressed_file, put_buffer);
@@ -617,14 +632,14 @@ int cache_layer_upload_seg(char *fpath, long offset, char *key, long len)
       return retval;
     }
   } else {
-    dbg_print("[DBG] remaining space is %ld, enough to hold the segment\n",
+    dbg_print("[DBG] Remaining space is %ld, enough to hold the segment\n",
         Remaining_space);
     retval = update_timestamp(cache_file);
     if (retval < 0) {
       return retval;
     }
     Remaining_space -= len_compressed_file;
-    dbg_print("[DBG] remaining space decreased to %ld\n", Remaining_space);
+    dbg_print("[DBG] Remaining space decreased to %ld\n", Remaining_space);
   }
 
   dbg_print("[DBG] cache_layer_upload_seg(fpath=\"%s\", offset=%ld, key=\"%s\","

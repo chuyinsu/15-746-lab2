@@ -2,7 +2,7 @@
  * @file hashtable.c
  * @brief A persistent hash table implementation.
  *
- *        For a separate-chaining design, usually there is an array where each
+ *        This is a separate-chaining design, there is an array where each
  *        element in the array is a linked-list. I'll call an element of the
  *        array "bucket" and an element of the linked-list "slot".
  *
@@ -27,7 +27,7 @@
 #include <sys/mman.h>
 #include <stdlib.h>
 
-#define DEBUG
+// #define DEBUG
 #include "cloudfs.h"
 
 static char Bkt_prfx[MAX_PATH_LEN];
@@ -191,9 +191,9 @@ static int add_slots(char *bucket, int all)
  *        This function creates bucket files if the hash table is empty.
  *        Also it mmaps all bucket files to memory for future use.
  * @param bkt_prfx Path of the bucket files, except the bucket number.
- *                 E.g. the prefix is /mnt/ssd/tmp/bucket, and there are
- *                 10 buckets, then bucket files are /mnt/ssd/tmp/bucket0
- *                 to /mnt/ssd/tmp/bucket9.
+ *                 E.g. the prefix is /mnt/ssd/.tmp/bucket, and there are
+ *                 10 buckets, then bucket files are /mnt/ssd/.tmp/bucket0
+ *                 to /mnt/ssd/.tmp/bucket9.
  * @param bkt_num Number of bucket files.
  * @param bkt_size Default size of each bucket file in bytes.
  * @return 0 on success, -errno otherwise.
@@ -385,7 +385,7 @@ int ht_insert(struct cloudfs_seg *segp)
 
 /**
  * @brief Search for a particular segment.
- *        Match is found if seg_size and md5 are the same.
+ *        Match is found if their md5s are the same.
  * @param segp The segment to search for.
  * @param found If found, place the match's pointer here,
  *              If not found, this will be set to NULL.

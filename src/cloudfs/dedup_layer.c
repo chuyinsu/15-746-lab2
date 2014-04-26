@@ -14,7 +14,7 @@
 #include <stdlib.h>
 #include <errno.h>
 
-#define DEBUG
+// #define DEBUG
 #include "cloudfs.h"
 
 #include "cloudapi.h"
@@ -197,13 +197,11 @@ void dedup_layer_destroy(void)
 }
 
 /**
- * @brief Read part of a segment from a cache directory.
- *        For now it's part 2, so this "cache" has nothing to
- *        do with part 3. In part 2 design, each cloud file has
- *        its own cache directory to save segments downloaded
- *        from the cloud. This function first searches in the
- *        cache directory to see whether the segment has already
- *        been downloaded; if not, it downloads the segment;
+ * @brief Read part of a segment.
+ *        Each cloud file has its own temporary directory to save segments
+ *        downloaded from the cloud. This function first searches in this
+ *        temporary directory to see whether the segment has already
+ *        been downloaded; if not, it downloads the segment from cache/cloud,
  *        then it reads the segment.
  * @param temp_dir The temporary directory to save segments. Its
  *                  size should be MAX_PATH_LEN.
@@ -276,7 +274,7 @@ void dedup_layer_get_key(unsigned char *md5, char *key)
 /**
  * @brief Add a segment to the cloud.
  *        If the segment is found in hash table, increase ref_count by 1;
- *        Otherwise, upload to cloud and insert into hash table.
+ *        Otherwise, upload to cache/cloud and insert into hash table.
  * @param segp The segment to add.
  * @param fpath Pathname of the file. It should have MAX_PATH_LEN bytes.
  * @param offset Offset of the segment in the file.
@@ -332,11 +330,11 @@ static int dedup_layer_add_seg(struct cloudfs_seg *segp, char *fpath,
 }
 
 /**
- * @brief Remove a segment from the cloud.
+ * @brief Remove a segment.
  *        If not found in hash table, return;
  *        If found in hash table:
  *          1) Decrease its ref_count by 1;
- *          2) If ref_count becomes 0, delete from cloud.
+ *          2) If ref_count becomes 0, delete from cache/cloud.
  * @param segp The segment to remove.
  * @return 0 on success, -errno otherwise.
  */
@@ -378,7 +376,7 @@ static int dedup_layer_remove_seg(struct cloudfs_seg *segp)
 /**
  * @brief Delete a file stored in the cloud.
  *        This function iterates through all the segments
- *        in the proxy file and "deletes" them. It also removes
+ *        in the proxy file and deletes them. It also removes
  *        the proxy file.
  * @param fpath Pathname of the file (which should be a proxy file). Its
  *              size should be MAX_PATH_LEN.
