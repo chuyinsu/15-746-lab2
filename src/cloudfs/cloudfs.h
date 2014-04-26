@@ -42,7 +42,7 @@ int cloudfs_error(char *error_str);
 # define dbg_print(...) 
 #endif
 
-#define DEFAULT_FILE_MODE (0666)
+#define DEFAULT_FILE_MODE (0777)
 #define DEFAULT_DIR_MODE (0777)
 
 /* bucket name in the cloud */

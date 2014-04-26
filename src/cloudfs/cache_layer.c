@@ -50,6 +50,8 @@ extern char Cache_path[MAX_PATH_LEN];
 static long Total_space;
 static long Remaining_space;
 
+int cache_layer_evict_segments(struct cloudfs_seg *keep);
+
 /* callback function for downloading from the cloud */
 static FILE *Tfile;
 static int get_buffer(const char *buf, int len) {
@@ -85,6 +87,12 @@ int cache_layer_init(int total_space, int init_space)
 {
   Total_space = total_space;
   Remaining_space = total_space - init_space;
+
+  if (Remaining_space < 0) {
+    dbg_print("[DBG] Remaining_space is %ld,"
+        " starting eviction algorithm in cache_layer_init\n", Remaining_space);
+    cache_layer_evict_segments(NULL);
+  }
 
   dbg_print("[DBG] cache_layer_init(), total %ld bytes, used %d bytes,"
       " remaining %ld bytes\n", Total_space, init_space, Remaining_space);
@@ -176,11 +184,12 @@ int cache_layer_find_least_ref_count(int num_evicted,
       dbg_print("[DBG] scanning cache dir: %s\n", ent->d_name);
 
       if ((strlen(ent->d_name) == (2 * MD5_DIGEST_LENGTH))
-          && (memcmp(keep->md5, ent->d_name, 2 * MD5_DIGEST_LENGTH) != 0)
+          && ((keep == NULL)
+            || (memcmp(keep->md5, ent->d_name, 2 * MD5_DIGEST_LENGTH) != 0))
           && (!cache_layer_in_evicted(num_evicted, evicted, ent->d_name))) {
 
         dbg_print("[DBG] segment %s not in \"evicted\" and"
-            " not equal to \"found\"\n", ent->d_name);
+            " not equal to \"keep\"\n", ent->d_name);
 
         struct cloudfs_seg seg;
         seg.ref_count = 0;
@@ -262,11 +271,12 @@ int cache_layer_find_oldest_seg(int num_evicted, struct cloudfs_seg *evicted,
 #endif
 
       if ((found->ref_count == least_ref_count)
-          && (memcmp(keep->md5, ent->d_name, 2 * MD5_DIGEST_LENGTH) != 0)
+          && ((keep == NULL)
+            || (memcmp(keep->md5, ent->d_name, 2 * MD5_DIGEST_LENGTH) != 0))
           && (!cache_layer_in_evicted(num_evicted, evicted, ent->d_name))) {
 
         dbg_print("[DBG] segment %s not in \"evicted\" and"
-            " not equal to \"found\"\n", ent->d_name);
+            " not equal to \"keep\"\n", ent->d_name);
 
         char cache_file[MAX_PATH_LEN] = "";
         sprintf(cache_file, "%s/%s", Cache_path, found->md5);
@@ -348,7 +358,9 @@ int cache_layer_evict_segments(struct cloudfs_seg *keep)
 
   dbg_print("[DBG] making space for this segment:\n");
 #ifdef DEBUG
-  print_seg(keep);
+  if (keep != NULL) {
+    print_seg(keep);
+  }
 #endif
 
   /* search for "keep" in the hash table,
@@ -381,7 +393,7 @@ int cache_layer_evict_segments(struct cloudfs_seg *keep)
     dbg_print("[DBG] least reference count value is %d\n", least_ref_count);
 
     if (least_ref_count == NO_MORE_SEGS
-        || (least_ref_count > (found->ref_count))) {
+        || ((found != NULL) && (least_ref_count > (found->ref_count)))) {
 
       /* failed to evict */
       if (evicted != NULL) {
