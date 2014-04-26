@@ -1272,8 +1272,7 @@ static int sum_cache(const char *fpath, const struct stat *sb,
     int typeflag UNUSED)
 {
   dbg_print("[DBG] scanning cache directory: %s\n", fpath);
-  if ((strcmp(fpath, ".") != 0) && (strcmp(fpath, "..") != 0)
-      && (strcmp(fpath, Cache_path) != 0)) {
+  if (strlen(fpath) == (strlen(Cache_path) + 1 + 2 * MD5_DIGEST_LENGTH)) {
     dbg_print("[DBG] cache file found: %s\n", fpath);
     Cache_init_size += (sb->st_size);
     dbg_print("[DBG] cache initial size increased to %d\n", Cache_init_size);
