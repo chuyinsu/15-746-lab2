@@ -27,7 +27,7 @@
 #include <sys/mman.h>
 #include <stdlib.h>
 
-#define DEBUG
+//#define DEBUG
 #include "cloudfs.h"
 
 static char Bkt_prfx[MAX_PATH_LEN];

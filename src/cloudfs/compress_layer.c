@@ -7,7 +7,7 @@
 
 #include <stdio.h>
 
-#define DEBUG
+//#define DEBUG
 #include "cloudfs.h"
 
 #include "cloudapi.h"

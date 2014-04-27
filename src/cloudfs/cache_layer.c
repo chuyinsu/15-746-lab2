@@ -15,7 +15,7 @@
 #include <limits.h>
 #include <dirent.h>
 
-#define DEBUG
+//#define DEBUG
 #include "cloudfs.h"
 
 #include "cloudapi.h"
@@ -214,7 +214,7 @@ int cache_layer_find_oldest_seg(int num_evicted, struct cloudfs_seg *evicted,
 #ifdef DEBUG
           print_seg(next_evict);
 #endif
-        } else if (timespec_compare(&ts, &oldest_ts) > 0) {
+        } else if (timespec_compare(&ts, &oldest_ts) < 0) {
           oldest_ts = ts;
           dbg_print("[DBG] oldest_ts updated to:\n");
           dbg_print("      tv_sec = %ld\n", oldest_ts.tv_sec);
