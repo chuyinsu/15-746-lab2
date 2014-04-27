@@ -234,8 +234,7 @@ int cache_layer_find_least_ref_count(int num_evicted,
  * @return 0 on success, negative otherwise.
  */
 int cache_layer_find_oldest_seg(int num_evicted, struct cloudfs_seg *evicted,
-    struct cloudfs_seg *keep, int least_ref_count,
-    struct cloudfs_seg *next_evict)
+    struct cloudfs_seg *keep, int max_seg_size, struct cloudfs_seg *next_evict)
 {
   int retval = 0;
   struct timespec oldest_ts;
@@ -270,18 +269,21 @@ int cache_layer_find_oldest_seg(int num_evicted, struct cloudfs_seg *evicted,
       print_seg(found);
 #endif
 
-      if ((found->ref_count == least_ref_count)
+      char cache_file[MAX_PATH_LEN] = "";
+      sprintf(cache_file, "%s/%s", Cache_path, ent->d_name);
+      struct stat sb;
+      retval = lstat(cache_file, &sb);
+      if (retval < 0) {
+        return retval;
+      }
+
+      if ((sb.st_size == max_seg_size)
           && ((keep == NULL)
             || (memcmp(keep->md5, ent->d_name, 2 * MD5_DIGEST_LENGTH) != 0))
           && (!cache_layer_in_evicted(num_evicted, evicted, ent->d_name))) {
 
         dbg_print("[DBG] segment %s not in \"evicted\" and"
             " not equal to \"keep\"\n", ent->d_name);
-
-        char cache_file[MAX_PATH_LEN] = "";
-        sprintf(cache_file, "%s/%s", Cache_path, found->md5);
-        dbg_print("[DBG] cache file %s has least_ref_count %d\n",
-            cache_file, found->ref_count);
 
         struct timespec ts;
         retval =
@@ -332,6 +334,54 @@ int cache_layer_find_oldest_seg(int num_evicted, struct cloudfs_seg *evicted,
   return retval;
 }
 
+int cache_layer_find_max_seg_size(int num_evicted, struct cloudfs_seg *evicted,
+    struct cloudfs_seg *keep, int *max_seg_size)
+{
+  int retval = 0;
+  int max = INT_MIN;
+
+  *max_seg_size = NO_MORE_SEGS;
+  dbg_print("[DBG] pre-set max_seg_size to NO_MORE_SEGS(%d)\n",
+      *max_seg_size);
+
+  DIR *dir = NULL;
+  struct dirent *ent = NULL;
+  if ((dir = opendir(Cache_path)) != NULL) {
+
+    while ((ent = readdir(dir)) != NULL) {
+      dbg_print("[DBG] scanning cache dir: %s\n", ent->d_name);
+
+      if ((strlen(ent->d_name) == (2 * MD5_DIGEST_LENGTH))
+          && ((keep == NULL)
+            || (memcmp(keep->md5, ent->d_name, 2 * MD5_DIGEST_LENGTH) != 0))
+          && (!cache_layer_in_evicted(num_evicted, evicted, ent->d_name))) {
+
+        dbg_print("[DBG] segment %s not in \"evicted\" and"
+            " not equal to \"keep\"\n", ent->d_name);
+
+        char cache_file[MAX_PATH_LEN] = "";
+        sprintf(cache_file, "%s/%s", Cache_path, ent->d_name);
+        struct stat sb;
+        retval = lstat(cache_file, &sb);
+        if (retval < 0) {
+          return retval;
+        }
+
+        if (sb.st_size > max) {
+          max = sb.st_size;
+          *max_seg_size = max;
+          dbg_print("[DBG] max_seg_size updated to %d\n", *max_seg_size);
+        }
+      }
+    }
+    closedir(dir);
+  } else {
+    retval = cloudfs_error("cache_layer_find_max_seg_size");
+  }
+
+  return retval;
+}
+
 /**
  * @brief Evict segments according to the cache eviction algorithm.
  *        This is called when Remaining_space is less than zero and its purpose
@@ -376,6 +426,14 @@ int cache_layer_evict_segments(struct cloudfs_seg *keep)
     dbg_print("[ERR] segment not found in hash table\n");
   }
 
+  char cache_file[MAX_PATH_LEN] = "";
+  sprintf(cache_file, "%s/%s", Cache_path, found->md5);
+  struct stat sb;
+  retval = lstat(cache_file, &sb);
+  if (retval < 0) {
+    return retval;
+  }
+
   int num_evicted = 0;
   struct cloudfs_seg *evicted = NULL;
   struct cloudfs_seg next_evict;
@@ -384,16 +442,27 @@ int cache_layer_evict_segments(struct cloudfs_seg *keep)
 
     /* traverse the cache directory, find the least ref_count value,
      * excluding segments in "evicted" and the "found" segment */
-    int least_ref_count = 0;
-    retval = cache_layer_find_least_ref_count(num_evicted, evicted, found,
-        &least_ref_count);
+    /*
+       int least_ref_count = 0;
+       retval = cache_layer_find_least_ref_count(num_evicted, evicted, found,
+       &least_ref_count);
+       if (retval < 0) {
+       return retval;
+       }
+       dbg_print("[DBG] least reference count value is %d\n", least_ref_count);
+       */
+
+    /* option 2: evict maximum size instead of least ref_count */
+    int max_seg_size = 0;
+    retval = cache_layer_find_max_seg_size(num_evicted, evicted, found,
+        &max_seg_size);
     if (retval < 0) {
       return retval;
     }
-    dbg_print("[DBG] least reference count value is %d\n", least_ref_count);
+    dbg_print("[DBG] max segment size is %d\n", max_seg_size);
 
-    if (least_ref_count == NO_MORE_SEGS
-        || ((found != NULL) && (least_ref_count > (found->ref_count)))) {
+    if (max_seg_size == NO_MORE_SEGS
+        || ((max_seg_size < (sb.st_size)))) {
 
       /* failed to evict */
       if (evicted != NULL) {
@@ -407,7 +476,7 @@ int cache_layer_evict_segments(struct cloudfs_seg *keep)
        * find the oldest segment with least_ref_count,
        * excluding segments in "evicted" and the "found" segment */
       retval = cache_layer_find_oldest_seg(num_evicted, evicted, found,
-          least_ref_count, &next_evict);
+          max_seg_size, &next_evict);
       if (retval < 0) {
         return retval;
       }
@@ -446,18 +515,6 @@ int cache_layer_evict_segments(struct cloudfs_seg *keep)
     memcpy(new_evicted->md5, next_evict.md5, 2 * MD5_DIGEST_LENGTH);
     dbg_print("[DBG] next segment to evict added to array\n");
 
-    char cache_file[MAX_PATH_LEN] = "";
-    sprintf(cache_file, "%s/%s", Cache_path, next_evict.md5);
-
-    /* get compressed segment length */
-    struct stat sb;
-    retval = lstat(cache_file, &sb);
-    if (retval < 0) {
-      retval = cloudfs_error("cache_layer_evict_segments");
-      return retval;
-    }
-    dbg_print("[DBG] length of compressed segment is %llu\n", sb.st_size);
-
     remaining_space += (sb.st_size);
     dbg_print("[DBG] remaining space increased to %ld\n", remaining_space);
   }
@@ -466,34 +523,34 @@ int cache_layer_evict_segments(struct cloudfs_seg *keep)
   int i = 0;
   for (i = 0; i < num_evicted; i++) {
 
-    char cache_file[MAX_PATH_LEN] = "";
-    sprintf(cache_file, "%s/%s", Cache_path, evicted[i].md5);
+    char cache_evict[MAX_PATH_LEN] = "";
+    sprintf(cache_evict, "%s/%s", Cache_path, evicted[i].md5);
 
     /* get compressed segment length */
-    struct stat sb;
-    retval = lstat(cache_file, &sb);
+    struct stat sb_evict;
+    retval = lstat(cache_evict, &sb_evict);
     if (retval < 0) {
       retval = cloudfs_error("cache_layer_evict_segments");
       return retval;
     }
-    dbg_print("[DBG] length of compressed segment is %llu\n", sb.st_size);
+    dbg_print("[DBG] length of compressed segment is %llu\n", sb_evict.st_size);
 
     /* upload the segment */
-    Cfile = fopen(cache_file, "rb");
-    cloud_put_object(BUCKET, evicted[i].md5, sb.st_size, put_buffer);
+    Cfile = fopen(cache_evict, "rb");
+    cloud_put_object(BUCKET, evicted[i].md5, sb_evict.st_size, put_buffer);
     cloud_print_error();
     fclose(Cfile);
-    dbg_print("[DBG] segment %s uploaded\n", cache_file);
+    dbg_print("[DBG] segment %s uploaded\n", cache_evict);
 
     /* delete the segment in cache */
-    retval = remove(cache_file);
+    retval = remove(cache_evict);
     if (retval < 0) {
       retval = cloudfs_error("cache_layer_evict_segments");
       return retval;
     }
-    dbg_print("[DBG] cache file %s deleted\n", cache_file);
+    dbg_print("[DBG] cache file %s deleted\n", cache_evict);
 
-    Remaining_space += (sb.st_size);
+    Remaining_space += (sb_evict.st_size);
     dbg_print("[DBG] global Remaining_space increased to %ld\n",
         Remaining_space);
   }
