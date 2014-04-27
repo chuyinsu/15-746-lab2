@@ -1361,7 +1361,7 @@ int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name)
       exit(EXIT_FAILURE);
     }
     dedup_layer_init(State_.rabin_window_size, State_.avg_seg_size,
-        State_.avg_seg_size / 2, State_.avg_seg_size * 2, State_.no_cache);
+        State_.cache_size / 800, State_.avg_seg_size * 8, State_.no_cache);
     if (!State_.no_cache) {
       dbg_print("[DBG] cache enabled\n");
       dbg_print("[DBG] cache size %d bytes\n", State_.cache_size);

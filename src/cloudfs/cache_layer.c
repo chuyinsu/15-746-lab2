@@ -10,13 +10,14 @@
  *                     algorithm.
  *        3) Eviction: eviction starts if there is a segment S in the cloud
  *                     which the user wants to use, but the cache does not have
- *                     enough space. Here, ref_count has top priority,
+ *                     enough space. Here, segment's size (compressed) has
+ *                     top priority (smaller size stays in cache),
  *                     then use LRU to break the tie.
- *                     For example, first find the least referenced segment in
- *                     cache. If its ref_count is more than S's, no eviction can
- *                     be made. If the least ref_count in the cache <=
- *                     S's ref_count, then evict the least recently used segment
- *                     having the smallest ref_count. Repeat this procedure
+ *                     For example, first find the maximum sized segment in
+ *                     cache. If its size is smaller than S's, no eviction can
+ *                     be made. If the maximum size in the cache >= S's size,
+ *                     then evict the least recently used segment
+ *                     having the maximum size. Repeat this procedure
  *                     untill cache has enough space.
  * @author Yinsu Chu (yinsuc)
  */
@@ -156,80 +157,13 @@ int cache_layer_in_evicted(int num_evicted, struct cloudfs_seg *evicted,
 }
 
 /**
- * @brief Traverse the cache directory, find the least ref_count value.
+ * @brief Traverse the cache directory, get the oldest seg with given size.
  *        "num_evicted" number of segments in "evicted" and the
  *        "keep" segment are ignored.
  * @param num_evicted Number of segments in "evicted".
  * @param evicted Array of segments to ignore.
  * @param keep Segment to ignore.
- * @param least_ref_count Return the result here.
- * @return 0 on success, negative otherwise.
- */
-int cache_layer_find_least_ref_count(int num_evicted,
-    struct cloudfs_seg *evicted, struct cloudfs_seg *keep,
-    int *least_ref_count)
-{
-  int retval = 0;
-  int least = INT_MAX;
-
-  *least_ref_count = NO_MORE_SEGS;
-  dbg_print("[DBG] pre-set least_ref_count to NO_MORE_SEGS(%d)\n",
-      *least_ref_count);
-
-  DIR *dir = NULL;
-  struct dirent *ent = NULL;
-  if ((dir = opendir(Cache_path)) != NULL) {
-
-    while ((ent = readdir(dir)) != NULL) {
-      dbg_print("[DBG] scanning cache dir: %s\n", ent->d_name);
-
-      if ((strlen(ent->d_name) == (2 * MD5_DIGEST_LENGTH))
-          && ((keep == NULL)
-            || (memcmp(keep->md5, ent->d_name, 2 * MD5_DIGEST_LENGTH) != 0))
-          && (!cache_layer_in_evicted(num_evicted, evicted, ent->d_name))) {
-
-        dbg_print("[DBG] segment %s not in \"evicted\" and"
-            " not equal to \"keep\"\n", ent->d_name);
-
-        struct cloudfs_seg seg;
-        seg.ref_count = 0;
-        seg.seg_size = 0;
-        memset(seg.md5, '\0', 2 * MD5_DIGEST_LENGTH + 1);
-        memcpy(seg.md5, ent->d_name, 2 * MD5_DIGEST_LENGTH);
-
-        struct cloudfs_seg *found = NULL;
-        retval = ht_search(&seg, &found);
-        if (retval < 0) {
-          return retval;
-        }
-        dbg_print("[DBG] segment found in hash table:\n");
-#ifdef DEBUG
-        print_seg(found);
-#endif
-
-        if (found->ref_count < least) {
-          least = found->ref_count;
-          *least_ref_count = least;
-          dbg_print("[DBG] least_ref_count updated to %d\n", *least_ref_count);
-        }
-      }
-    }
-    closedir(dir);
-  } else {
-    retval = cloudfs_error("cache_layer_find_least_ref_count");
-  }
-
-  return retval;
-}
-
-/**
- * @brief Traverse the cache directory, get the oldest seg with given ref_count.
- *        "num_evicted" number of segments in "evicted" and the
- *        "keep" segment are ignored.
- * @param num_evicted Number of segments in "evicted".
- * @param evicted Array of segments to ignore.
- * @param keep Segment to ignore.
- * @param least_ref_count Target ref_count to match.
+ * @param max_seg_size Target segment size (compressed) to match.
  * @param next_evict Copy and return the qualified segment here.
  * @return 0 on success, negative otherwise.
  */
@@ -252,22 +186,6 @@ int cache_layer_find_oldest_seg(int num_evicted, struct cloudfs_seg *evicted,
       if (strlen(ent->d_name) != (2 * MD5_DIGEST_LENGTH)) {
         continue;
       }
-
-      struct cloudfs_seg seg;
-      seg.ref_count = 0;
-      seg.seg_size = 0;
-      memset(seg.md5, '\0', 2 * MD5_DIGEST_LENGTH + 1);
-      memcpy(seg.md5, ent->d_name, 2 * MD5_DIGEST_LENGTH);
-
-      struct cloudfs_seg *found = NULL;
-      retval = ht_search(&seg, &found);
-      if (retval < 0) {
-        return retval;
-      }
-      dbg_print("[DBG] segment found in hash table:\n");
-#ifdef DEBUG
-      print_seg(found);
-#endif
 
       char cache_file[MAX_PATH_LEN] = "";
       sprintf(cache_file, "%s/%s", Cache_path, ent->d_name);
@@ -302,10 +220,10 @@ int cache_layer_find_oldest_seg(int num_evicted, struct cloudfs_seg *evicted,
           dbg_print("      tv_sec = %ld\n", oldest_ts.tv_sec);
           dbg_print("      tv_nsec = %ld\n", oldest_ts.tv_nsec);
 
-          next_evict->ref_count = found->ref_count;
-          next_evict->seg_size = found->seg_size;
+          next_evict->ref_count = 0;
+          next_evict->seg_size = 0;
           memset(next_evict->md5, '\0', 2 * MD5_DIGEST_LENGTH + 1);
-          memcpy(next_evict->md5, found->md5, 2 * MD5_DIGEST_LENGTH);
+          memcpy(next_evict->md5, ent->d_name, 2 * MD5_DIGEST_LENGTH);
           dbg_print("[DBG] next_evict initialized to:\n");
 #ifdef DEBUG
           print_seg(next_evict);
@@ -316,10 +234,10 @@ int cache_layer_find_oldest_seg(int num_evicted, struct cloudfs_seg *evicted,
           dbg_print("      tv_sec = %ld\n", oldest_ts.tv_sec);
           dbg_print("      tv_nsec = %ld\n", oldest_ts.tv_nsec);
 
-          next_evict->ref_count = found->ref_count;
-          next_evict->seg_size = found->seg_size;
+          next_evict->ref_count = 0;
+          next_evict->seg_size = 0;
           memset(next_evict->md5, '\0', 2 * MD5_DIGEST_LENGTH + 1);
-          memcpy(next_evict->md5, found->md5, 2 * MD5_DIGEST_LENGTH);
+          memcpy(next_evict->md5, ent->d_name, 2 * MD5_DIGEST_LENGTH);
           dbg_print("[DBG] next_evict updated to:\n");
 #ifdef DEBUG
           print_seg(next_evict);
@@ -334,6 +252,16 @@ int cache_layer_find_oldest_seg(int num_evicted, struct cloudfs_seg *evicted,
   return retval;
 }
 
+/**
+ * @brief Traverse the cache directory, find the maximum size.
+ *        "num_evicted" number of segments in "evicted" and the
+ *        "keep" segment are ignored.
+ * @param num_evicted Number of segments in "evicted".
+ * @param evicted Array of segments to ignore.
+ * @param keep Segment to ignore.
+ * @param max_seg_size Return the result here.
+ * @return 0 on success, negative otherwise.
+ */
 int cache_layer_find_max_seg_size(int num_evicted, struct cloudfs_seg *evicted,
     struct cloudfs_seg *keep, int *max_seg_size)
 {
@@ -387,11 +315,10 @@ int cache_layer_find_max_seg_size(int num_evicted, struct cloudfs_seg *evicted,
  *        This is called when Remaining_space is less than zero and its purpose
  *        is to evict segments to make Remaining_space above or equal to zero.
  *        The algorithm works like this:
- *          1) First evict the least referenced segments (less than ref_count of
+ *          1) First evict the max sized segments (bigger than size of
  *             "keep"). Use timestamp to break ties (LRU).
- *          2) If "keep" has a least referenced count,
- *             evict based on timestamp (LRU).
- *          3) If "keep" is the ONLY segment with the least referenced count,
+ *          2) If "keep" has a maximum size, evict based on timestamp (LRU).
+ *          3) If "keep" is the ONLY segment with the maximum segment size,
  *             return CANNOT_EVICT to indicate no segments can be evicted.
  *        Upon successful evition, this function should upload all
  *        evicted segments to the cloud, delete the copies in the cache and
@@ -440,19 +367,6 @@ int cache_layer_evict_segments(struct cloudfs_seg *keep)
 
   while (remaining_space < 0) {
 
-    /* traverse the cache directory, find the least ref_count value,
-     * excluding segments in "evicted" and the "found" segment */
-    /*
-       int least_ref_count = 0;
-       retval = cache_layer_find_least_ref_count(num_evicted, evicted, found,
-       &least_ref_count);
-       if (retval < 0) {
-       return retval;
-       }
-       dbg_print("[DBG] least reference count value is %d\n", least_ref_count);
-       */
-
-    /* option 2: evict maximum size instead of least ref_count */
     int max_seg_size = 0;
     retval = cache_layer_find_max_seg_size(num_evicted, evicted, found,
         &max_seg_size);
@@ -472,9 +386,6 @@ int cache_layer_evict_segments(struct cloudfs_seg *keep)
 
     } else {
 
-      /* traverse the cache directory,
-       * find the oldest segment with least_ref_count,
-       * excluding segments in "evicted" and the "found" segment */
       retval = cache_layer_find_oldest_seg(num_evicted, evicted, found,
           max_seg_size, &next_evict);
       if (retval < 0) {
