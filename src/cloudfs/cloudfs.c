@@ -1360,8 +1360,14 @@ int cloudfs_start(struct cloudfs_state *state, const char* fuse_runtime_name)
       dbg_print("[ERR] failed to initialize hash table\n");
       exit(EXIT_FAILURE);
     }
+    if (State_.avg_seg_size <= 0) {
+      dbg_print("[ERR] invalid average segment size\n");
+      fprintf(stderr, "[ERR] invalid average segment size\n");
+      exit(EXIT_FAILURE);
+    }
     dedup_layer_init(State_.rabin_window_size, State_.avg_seg_size,
-        State_.cache_size / 800, State_.avg_seg_size * 8, State_.no_cache);
+        State_.avg_seg_size / 16 + 2, State_.avg_seg_size * 16,
+        State_.no_cache);
     if (!State_.no_cache) {
       dbg_print("[DBG] cache enabled\n");
       dbg_print("[DBG] cache size %d bytes\n", State_.cache_size);
