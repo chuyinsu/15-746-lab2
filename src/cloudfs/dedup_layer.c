@@ -179,10 +179,9 @@ static int dedup_layer_segmentation(char *fpath, int *num_seg,
 void dedup_layer_init(unsigned int window_size, unsigned int avg_seg_size,
     unsigned int min_seg_size, unsigned int max_seg_size, int no_cache)
 {
-  if (min_seg_size > max_seg_size) {
-    unsigned int temp = min_seg_size;
-    min_seg_size = max_seg_size;
-    max_seg_size = temp;
+  if (min_seg_size >= max_seg_size) {
+    min_seg_size = avg_seg_size / 512 + 4;
+    max_seg_size = avg_seg_size * 8;
   }
 
   Window_size = window_size;
